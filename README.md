@@ -160,8 +160,13 @@ npm test
 | `fb-ad-disable.js` | The script: userscript header, settings tables, engine, panel. |
 | `manifest.json`, `background.js` | Chrome extension wrapper (toolbar icon opens the menu). |
 | `test/mock/` | Mock Facebook pages. |
+| `LICENSE` | MIT licence. |
 | `test/run.test.js` | End-to-end tests (Playwright). |
 
 ## Disclaimer
 
 This is an unofficial tool, not affiliated with or endorsed by Meta. It automates your own account's settings pages; use it at your own discretion and check the result.
+
+## License
+
+[MIT](LICENSE) © 2026 Privaterra
