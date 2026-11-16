@@ -39,8 +39,18 @@ const pages = {
         m.menuRow('friend_requests', 'Who can send you friend requests?', 'Everyone', ['Everyone', 'Friends of friends']),
         m.audienceRow('friends_list', 'Who can see your friends list?', 'Public', A),
         m.el('h3', null, m.span('Who can Facebook suggest your profile to based on your phone number or email address')),
-        m.viewRow('lookup_email', 'People with your email address', 'Possible Connections', LOOKUP),
-        m.viewRow('lookup_phone', 'People with your phone number', 'No one', LOOKUP),
+        // Each row is one button holding its label and its current value. The email row already
+        // says "No one", and on this page it does not open: the value shown must be enough.
+        m.el('div', { role: 'button', onclick: () => m.rec('decoy', { what: 'opened a row that needed no change' }) },
+          m.el('div', null, m.span('People with your email address')), m.el('div', null, m.span('No one'))),
+        (() => {
+          const value = m.span('Possible Connections');
+          return m.el('div', { role: 'button', onclick: () => {
+            m.dialog('Who can Facebook suggest your profile to', 'Close', m.radios(LOOKUP, value.textContent, (o) => {
+              value.textContent = o; m.rec('set', { id: 'lookup_phone', value: o }); m.closeAll();
+            }));
+          } }, m.el('div', null, m.span('People with your phone number')), m.el('div', null, value));
+        })(),
         m.checkboxDialogRow('search_engines', 'Do you want search engines outside of Facebook to link to your profile?',
           'Allow search engines outside of Facebook to link to your profile', true),
       ],
@@ -101,16 +111,23 @@ const pages = {
           render();
           box.scrollTop = 0;
         });
-        m.dialog(name, 'Back',
+        const panel = m.dialog(name, 'Back',
           m.el('div', { role: 'listitem' }, m.span(category)), m.el('div', { role: 'listitem' }, m.span('We make things for ' + name)),
           m.button('Facebook Page', () => {}), m.button(followers, () => {}), m.button('Website', () => {}), m.button(site, () => {}),
           m.el('div', { role: 'listitem' }, m.span('Ads from this advertiser')), status, btn);
+        // The panel stays on screen for a moment after "Back", as an animated panel does. Its lines
+        // (category, description…) are list items too, and must never be taken for advertisers.
+        const back = panel.querySelector('[aria-label="Back"]');
+        const instant = back.cloneNode(true); // drops the helper's immediate close
+        back.replaceWith(instant);
+        instant.addEventListener('click', () => setTimeout(() => panel.remove(), 400));
       } }, m.el('div', { style: 'height:22px' }, m.span(name), m.span(hidden() ? 'You hid their ads' : '')));
     };
     const sorted = () => [...DATA].sort((a, b) => hiddenNames().includes(b[0]) - hiddenNames().includes(a[0]));
     const render = () => box.replaceChildren(...sorted().slice(0, loaded).map(advertiser));
     render();
     m.dialog('Advertisers you saw ads from', 'Close',
+      m.el('div', { role: 'button', 'aria-label': 'Back', onclick: () => m.rec('decoy', { what: 'left the advertisers list' }) }, '←'),
       m.el('p', null, m.span('View and hide ads from advertisers you saw ads from.')),
       m.el('div', { role: 'button', onclick: () => m.rec('decoy', { what: 'filter' }) }, m.span('All advertisers')),
       m.el('div', { role: 'button', onclick: () => m.rec('decoy', { what: 'filter' }) }, m.span('All accounts')),

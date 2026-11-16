@@ -75,7 +75,7 @@ Console mode is fine for a single task such as *Disable list-based advertisers*,
 | **Remember processed advertisers** (on) | Keep a list of the list-based advertisers confirmed as disabled, for later runs. |
 | **Skip remembered advertisers** (on) | Only process advertisers that are new since earlier runs. The menu shows how many are remembered, with **Forget them** to clear the list. |
 | **Save advertiser details** (off) | Keep everything Facebook shows about each advertiser and add CSV export to the report. The advertiser table itself is always shown. |
-| **Save logs** (off) | Keep the full log and add **Copy log** and **Save log** buttons. |
+| **Keep the full log** (on) | Keep every log line of the run instead of the last 300. **Copy log** and **Save log** are always available, whatever this is set to. |
 | **Speed** | Pause between clicks. Use *Slow* if steps fail on a slow connection. |
 
 ### Last run and rate limiting
@@ -96,6 +96,7 @@ This history is kept in this browser only, next to the remembered advertisers.
 
 - The **top bar** is overall progress: the step number, the percentage done and the estimated time left.
 - A **second bar** appears while advertisers are being processed. The script first opens the whole advertiser list to count it, then fills the bar as it works through them. When the advertisers are done the bar disappears.
+- The advertiser bar comes straight back after a page load in the middle of an advertiser step, with the count so far.
 - An **advertiser table** fills in under the bars, one row per advertiser as it is handled: its name, what Facebook says about it (category and followers, or how many list uses were still allowed), and the result: ✅ disabled or ads hidden, ☑️ no change needed or already hidden, ⏭ skipped because remembered, 👁 what a dry run would do, ⚠️ failed. "remembered" marks an advertiser that was added to the remembered list. Hover over a row for the rest of its details.
 - The **log** gets one line per advertiser in the same order, for example `[12/215] Acme · Retail company · 1,234 followers · http://acme.example/ → ads hidden`.
 - **Time left** is estimated from how fast the run is actually going: the average time per step so far, and the average time per advertiser. It is rough at the start and improves as the run proceeds. Until an advertiser list has been counted, the estimate says "plus advertisers not counted yet".
@@ -156,14 +157,14 @@ The details are whatever Facebook's page shows for that advertiser; the script c
 
 ### Saving the log
 
-With **Save logs** on, **Copy log** and **Save log** appear during the run and in the report. The saved text file contains the options used, the report and every log line with its time. Without the option, only the last 300 log lines are kept, and only on screen.
+**Copy log** and **Save log** are always there, during the run and in the report. The saved text file contains the options used, the report and the log lines with their times. With **Keep the full log** on (the default) that is every line of the run; with it off, the last 300.
 
 ## What each task does
 
 | Task | Where | What happens |
 | --- | --- | --- |
 | **Disable list-based advertisers** | Accounts Center → Ad preferences → Manage info → Audience-based advertising | For every advertiser: open it → *They uploaded or used a list to reach you* → **Don't allow**, for both showing you ads and excluding you from ads. This is the original script this project grew from. See the note below. |
-| **Hide advertisers you have seen** | Ad preferences → Advertisers you saw ads from | Opens each advertiser in the list and clicks **Hide ads**. Advertisers the list marks "You hid their ads" are counted as already hidden and left alone. The list loads as it is scrolled, so the script first scrolls it to the end to count it, and scrolls again whenever Facebook redraws it after a hide. If entries are still out of reach at the end the report says how many. |
+| **Hide advertisers you have seen** | Ad preferences → Advertisers you saw ads from | Opens each advertiser in the list and clicks **Hide ads**. Advertisers the list marks "You hid their ads" are counted as already hidden and left alone. The list loads as it is scrolled, so the script first scrolls it to the end to count it, and scrolls again whenever Facebook redraws it after a hide. An advertiser's own panel contains list-like lines too (its category, its description); the script only picks an entry while the list itself is on screen, so each advertiser is handled once. If entries are still out of reach at the end the report says how many. |
 | **Restrict ad data settings** | Ad preferences → Manage info | *Activity from other businesses* (formerly "Activity information from ad partners") → not using this information · *Categories used to reach you* → employer, job title, education and relationship status set to not used, other categories removed · *Ads in other apps* (under "Ads shown outside of Meta") → not showing · *Ads about Meta* → not using your activity · *Social interactions* → Only me. A row that already says so ("Not using this information") is left untouched. |
 | **Clear off-Meta activity history** | Accounts Center → Your information and permissions → Your activity off Meta technologies | **Clear previous activity**. See the note below. |
 | **Disconnect future off-Meta activity** (off by default; Max ticks it) | same page | *Manage future activity* → **Disconnect future activity**. Side effect: "Log in with Facebook" on other sites and apps stops working. See the note below. |
@@ -226,6 +227,8 @@ Meta gives no single switch for AI, and Meta AI itself (in search and Messenger)
 
 Where Facebook offers nothing stricter than Friends (followers, public comments), Max uses Friends.
 
+A setting is never loosened. If a row already shows something stricter than the level asks for, for example "No one" where Moderate would set "Friends", it is left as it is and the report says so. When a row shows its current value and that is already the wanted one, the row is not opened at all.
+
 ## What this cannot do
 
 - **It cannot delete what data brokers hold.** It stops brokers and advertisers from using their lists and your off-Meta activity to target you on Meta, which is the part Facebook lets you control. To have a broker delete your record you must ask the broker (or use an opt-out service or your regional privacy rights, for example GDPR or CCPA requests).
@@ -245,7 +248,7 @@ A safety rule that is tested: an option such as "Friends" or "Only me" is only e
 
 ## Troubleshooting
 
-- **Reporting a problem.** Use **Copy report** and paste it; for more detail run again with **Save logs** ticked and attach the saved log file. Both contain "what the page showed" for each failed step.
+- **Reporting a problem.** Use **Copy report** and paste it; for more detail use **Save log** and attach the file. Both contain "what the page showed" for each failed step.
 - **The page reloaded during a run.** In the extension and userscript the same tab carries on by itself from the step it was on (a step that reloads three times is skipped and reported). In console mode, run the script again.
 - **"Had no list controls" or "failed" advertisers.** An advertiser page without "Don't allow" / "Allow" buttons, or one where Facebook shows "This page isn't available right now", is counted separately and never reported as done. The report keeps what the first such page showed.
 - **A row has moved.** Facebook moves settings between pages. For rows known to move, the script tries the next settings page by itself (the log says "not on this page, trying the next one").

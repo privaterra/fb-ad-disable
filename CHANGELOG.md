@@ -3,11 +3,21 @@
 Notable changes to this project. Versions follow [semantic versioning](https://semver.org/).
 Each release on GitHub carries the section for its version.
 
-## [Unreleased]
+## [1.5.1] - unreleased
 
-Changes on the `dev` branch that are not in a release yet.
+On the `dev` branch, not released yet.
 
+### Fixed
+
+- **Advertisers were handled twice** ([#8](https://github.com/privaterra/fb-ad-disable/issues/8)). In "Hide advertisers you have seen", the lines of an advertiser's own panel (its category, its description) could be taken for further entries of the list when the panel was still on screen. Each such line was booked as another advertiser, which also inflated the "already hidden" and "no longer shown" counts. An entry is now only picked while the list itself is on screen, and the panel is closed with its own Back button, one press at a time.
+- **The advertiser progress bar disappeared** after a page load in the middle of an advertiser step and only came back when the next advertiser was done. It now comes straight back with the count so far.
+- **Copy log and Save log are always there**, during the run and in the report. They used to depend on the "Save logs" option, so they vanished whenever the saved options were lost, for example after installing the extension from a new folder. The option is now "Keep the full log" and is on by default.
+- **A row that already shows the wanted value is not opened.** "People with your email address · No one" failed with "could not find option" when its dialog did not open.
 - Links to files of this repository in release notes are written as full addresses, so they work on the release page.
+
+### Changed
+
+- **A setting is never loosened.** A row that shows something stricter than the level asks for ("No one" where Moderate would set "Friends") is left as it is.
 - The project now has two branches: `main` holds the released code, `dev` the next version. Releases are published from `main` only.
 
 ## [1.5.0] - 2026-11-16

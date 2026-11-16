@@ -140,7 +140,7 @@ test('userscript mode, Max level: every task runs across both sites', async () =
   assert.deepEqual(sets(events), {
     ad_partners: 'off', ad_outside: 'off', ad_about_meta: false, ad_social: 'Only me',
     future_posts: 'Only me', past_posts: true, friend_requests: 'Friends of friends', friends_list: 'Only me',
-    lookup_email: 'No one', search_engines: false, follow: 'Friends', following: 'Only me',
+    lookup_phone: 'No one', search_engines: false, follow: 'Friends', following: 'Only me',
     public_comments: 'Friends', post_on_profile: 'Only me', others_posts: 'Only me',
     tagged_posts: 'Only me', review_tagged: true, review_tags: true, share_to_stories: false,
     ai_summaries: false, reel_ai: false,
@@ -157,14 +157,16 @@ test('userscript mode, Max level: every task runs across both sites', async () =
   for (const id of ['ai_camera_roll', 'ai_training', 'ai_chats']) assert.equal(r[id].status, 'manual');
   assert.match(r.ai_training.text, /Open page/);
 
-  assert.equal(r.lookup_phone.status, 'already');
+  // The email row already shows "No one": that is read from the row, without opening it.
+  assert.equal(r.lookup_email.status, 'already');
+  assert.match(r.lookup_email.text, /Already set: No one/);
   assert.equal(r.public_profile_info.status, 'manual', 'a setting that is missing from the page is reported, not skipped silently');
   assert.match(r.public_profile_info.text, /Open page/);
   assert.match(r.public_profile_info.text, /What the page showed.*Who Can Follow Me/, 'the report says what was on the page instead');
   const status = (id) => r[id].status;
   assert.deepEqual(Object.keys(r).filter((id) => status(id) === 'info').sort(), ['ai_scan_followers', 'ai_scan_stories', 'ai_scan_tagging']);
   assert.deepEqual(Object.keys(r).filter((id) => !['changed', 'info'].includes(status(id))).sort(),
-    ['ai_camera_roll', 'ai_chats', 'ai_scan_posts', 'ai_training', 'lookup_phone', 'public_profile_info']);
+    ['ai_camera_roll', 'ai_chats', 'ai_scan_posts', 'ai_training', 'lookup_email', 'public_profile_info']);
   await context.close();
 });
 
@@ -192,6 +194,9 @@ test('dry run changes nothing and reports what it would do', async () => {
   assert.equal(r.future_posts.status, 'dry');
   assert.match(r.future_posts.text, /would select “Friends”/);
   assert.equal(r.post_on_profile.status, 'already', 'Moderate keeps a value that is already Friends');
+  // Moderate asks for "Friends", the row says "No one": a stricter setting is never loosened, or even opened.
+  assert.equal(r.lookup_email.status, 'already');
+  assert.match(r.lookup_email.text, /No one \(stricter than “Friends”, left as it is\)/);
   assert.equal(r.share_to_stories, undefined, 'Moderate does not include the Max-only setting');
   await context.close();
 });
@@ -266,7 +271,7 @@ test('progress bars, advertiser details CSV, saved log and remembered advertiser
 
   // The new options and their defaults.
   await p.locator('button[name="start"]').waitFor();
-  for (const [name, on] of [['remember', true], ['skipKnown', true], ['saveInfo', false], ['saveLog', false]]) {
+  for (const [name, on] of [['remember', true], ['skipKnown', true], ['saveInfo', false], ['saveLog', true]]) {
     assert.equal(await p.locator(`input[name="${name}"]`).isChecked(), on, `${name} default`);
   }
   assert.match(await p.locator('#known').textContent(), /0 remembered/);
@@ -291,7 +296,11 @@ test('progress bars, advertiser details CSV, saved log and remembered advertiser
   const csv = await saved(page, 'csv');
   assert.match(csv.file, /^fb-ad-disable-advertisers-[\d-]+\.csv$/);
   const rows = parseCsv(csv.text.replace(/^\uFEFF/, ''));
+  // Issue 8: each advertiser is booked once. The lines of an advertiser's own panel (its category,
+  // its description) are list items too, and its panel takes a moment to close.
   assert.equal(rows.length, 11);
+  assert.equal(new Set(rows.map((x) => `${x.task}/${x.name}`)).size, 11);
+  assert.match(r.seen.text, /4 advertisers hidden, 1 already hidden$/);
   const broker = rows.find((x) => x.name === 'Data Broker One');
   assert.equal(broker.task, 'list-based');
   assert.equal(broker.advertiser_id, '1000001');
@@ -321,7 +330,7 @@ test('progress bars, advertiser details CSV, saved log and remembered advertiser
   // Issue 2: the log as a file.
   const logFile = await saved(page, 'savelog');
   assert.match(logFile.file, /^fb-ad-disable-log-[\d-]+\.txt$/);
-  assert.match(logFile.text, /^fb-ad-disable 1\.5\.0 log\n/);
+  assert.match(logFile.text, /^fb-ad-disable 1\.5\.1 log\n/);
   assert.match(logFile.text, /Options: \{.*"saveLog":true/);
   assert.match(logFile.text, /\d\d:\d\d:\d\d   6 advertisers found, 6 to process/);
   assert.match(logFile.text, /\d\d:\d\d:\d\d Finished\.\n$/);
@@ -351,7 +360,8 @@ test('progress bars, advertiser details CSV, saved log and remembered advertiser
   assert.match(r.lists.text, /0 disabled, 0 needed no change, 1 had no list controls, 1 failed \(of 6\), 4 skipped as remembered/);
   assert.equal(listuse(), 5, 'remembered advertisers are not opened again');
   assert.equal(await p.locator('#advertisers tbody tr', { hasText: 'skipped (remembered' }).count(), 4);
-  assert.equal(await p.locator('button[name="savelog"]').count(), 0, 'no log buttons unless the option is on');
+  assert.equal(await p.locator('button[name="savelog"]').count(), 1, 'the log can always be saved');
+  assert.equal(await p.locator('button[name="copylog"]').count(), 1);
 
   // With "skip" off, every advertiser is processed again.
   await p.locator('button[name="menu"]').click();
@@ -416,6 +426,8 @@ test('a page reload in the middle of a run is picked up by the same tab only', a
   await other.close();
 
   await page.reload(); // Facebook reloads the page under the script
+  // The advertiser bar is back at once, with the count so far, not only when the next advertiser is done.
+  await panel(page).locator('#advlabel', { hasText: /^Advertisers: [1-3] of 6$/ }).waitFor({ timeout: 4000 });
   const r = await report(page);
   assert.equal(r.lists.status, 'changed');
   assert.match(r.lists.text, /1 failed \(of 6\)/);

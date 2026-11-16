@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FB Ad Disable & Privacy Hardener
 // @namespace    https://github.com/privaterra/fb-ad-disable
-// @version      1.5.0
+// @version      1.5.1
 // @description  Opt out of advertiser lists, restrict ad data use and tighten Facebook privacy settings from one menu.
 // @license      MIT
 // @homepageURL  https://github.com/privaterra/fb-ad-disable
@@ -32,7 +32,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.5.0';
+  const VERSION = '1.5.1';
   const TAG = '[fb-ad-disable]';
   const KEY = 'fbAdDisableState';
   const MEMORY_KEY = 'fbAdDisableAdvertisers';
@@ -806,6 +806,10 @@
   const describe = (v) => (v === 'alloff' ? 'every switch off' : typeof v === 'boolean' ? (v ? 'On' : 'Off')
     : '“' + v[0].charAt(0).toUpperCase() + v[0].slice(1) + '”');
 
+  // Audiences from widest to narrowest. A setting is never moved to a wider one.
+  const AUDIENCES = [['public', 'everyone', 'anyone', 'possible connections'], ['friends of friends'], ['friends'], ['only me', 'no one']];
+  const strictness = (text) => AUDIENCES.findIndex((names) => names.includes(norm(text)));
+
   async function applySetting(s, value) {
     if (s.tab) {
       const tab = findText(s.tab)[0];
@@ -835,6 +839,25 @@
       return r;
     }
 
+    // A row usually shows its current value ("People with your email address · No one"). When that
+    // is already the wanted one there is nothing to open.
+    if (Array.isArray(value)) {
+      const holder = row.closest('[role="button"],[role="link"],[role="listitem"]') || row.parentElement;
+      if (holder && holder.textContent.length < 300) {
+        const label = ownText(row);
+        const walker = document.createTreeWalker(holder, NodeFilter.SHOW_TEXT);
+        const wanted = strictness(value[0]);
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+          const piece = norm(n.nodeValue);
+          if (!piece || piece === label) continue;
+          if (hit(piece, value, s.mode || 'exact')) return { status: 'already', detail: clip(n.nodeValue, 80) };
+          // Never loosen: "No one" stays when the level only asks for "Friends".
+          if (wanted >= 0 && strictness(piece) > wanted) {
+            return { status: 'already', detail: `${clip(n.nodeValue, 80)} (stricter than ${describe(value)}, left as it is)` };
+          }
+        }
+      }
+    }
     let opened = await openRow(row);
     if (!opened && !(value !== 'alloff' && findOption(value, s.mode || 'exact').length)) {
       const btn = row.isConnected && rowButton(row); // e.g. the "View" link next to the row
@@ -1205,55 +1228,88 @@
     // An entry is known by its name: its status line ("You hid their ads") changes as the run goes.
     const keyOf = (el) => norm(firstText(el));
     const done = new Set(state[doneKey] || []);
+    const names = new Set(state[doneKey + 'Names'] || []); // every entry the list has shown
     const count = state[doneKey + 'Count'] || (state[doneKey + 'Count'] = { changed: 0, dry: 0, same: 0, failed: 0 });
-    let fails = 0, seen = '';
+    let fails = 0, seen = '', note = '';
+
+    // Is the list what is on screen? The panel of a single entry also contains list-like lines
+    // (an advertiser's category, its description). Taking those for entries books every advertiser
+    // twice, so an entry is only ever picked while most of what is listed is known to be the list.
+    const listShowing = () => {
+      const keys = items().map(keyOf);
+      if (!keys.length) return false;
+      if (!names.size) return true; // the first look, right after the list was opened
+      const known = keys.filter((k) => names.has(k)).length;
+      return known >= Math.min(3, names.size, keys.length) && known * 2 >= keys.length;
+    };
+    const learn = () => {
+      if (listShowing()) for (const el of items()) names.add(keyOf(el));
+      state[doneKey + 'Names'] = [...names];
+      return names.size;
+    };
+    // Close whatever is in front of the list: its own Back button, one press at a time, giving a
+    // panel that closes slowly the time to go before pressing anything else.
+    const backToList = async () => {
+      for (let i = 0; i < 4 && !listShowing(); i++) {
+        if (await waitFor(listShowing, i ? 3000 : 600).catch(() => false)) break;
+        const layer = topLayer();
+        const btn = (layer && findLabel(t('back'), layer).pop()) || findLabel(t('back')).pop();
+        if (!btn) break;
+        click(btn);
+        await settle();
+      }
+      return (await waitFor(listShowing, 3000).catch(() => false)) === true;
+    };
+    // The list cannot be brought back, or has stopped showing entries it showed before: load the
+    // page afresh, as long as each fresh load gets further. After that, say what was left.
+    const startOver = async (why, left) => {
+      const stall = state[doneKey + 'Stall'] || (state[doneKey + 'Stall'] = { at: -1, n: 0 });
+      if (done.size > stall.at) { stall.at = done.size; stall.n = 0; }
+      if (++stall.n <= 2) { await save(); throw new Renav(why, done.size); }
+      note = left;
+    };
 
     await waitFor(() => items().length, 8000, 'a list on this page');
-    const total = () => new Set([...done, ...items().map(keyOf)]).size;
-    const most = () => (state[doneKey + 'Total'] = Math.max(state[doneKey + 'Total'] || 0, total()));
     // More entries: a "See more" in the pop-up, or the end of a list that loads as it scrolls.
     // Keeps going while the list grows, until `until()` is true or nothing more comes.
     const load = async (until) => {
       if (!topLayer()) return false;
       for (let i = 0, stale = 0; i < 120 && stale < 2; i++) {
         check();
-        if (until()) return true;
+        if (until() || !listShowing()) break;
         const before = items().length;
         const btns = searchText(scope(), [...t('seeMore'), ...t('seeAll')], 'exact');
         if (btns.length) { btns.forEach(click); await settle(); }
         const list = items();
         if (list.length) { try { list[list.length - 1].scrollIntoView({ block: 'end' }); } catch (e) { /* ignore */ } await settle(); }
         stale = items().length > before ? 0 : stale + 1;
-        ui.progress(`${items().length} entries loaded…`);
+        learn();
+        ui.progress(`${names.size} entries found…`);
       }
       return until();
     };
     const more = () => load(() => items().some((x) => !done.has(keyOf(x))));
-    let note = '';
     // Count first: load the whole list, so the bar has its total and nothing is left unseen at the end.
+    learn();
     await load(() => false);
     ui.progress('');
-    each(null, null, done.size, most());
+    each(null, null, done.size, learn());
     while (fails < 3 && done.size < 1000) {
       check();
-      most();
+      if (!listShowing() && !(await backToList())) {
+        await startOver('the list is no longer on screen', ', the list could not be brought back on screen: run this task again');
+        break;
+      }
+      learn();
       const el = items().find((x) => !done.has(keyOf(x)));
       if (!el) {
         if (await more()) continue;
-        // Facebook sometimes redraws the list with fewer entries after a change. Load it afresh,
-        // as long as each fresh load gets further; after that, say how many were left.
-        const missing = (state[doneKey + 'Total'] || 0) - done.size;
-        if (missing > 0) {
-          const stall = state[doneKey + 'Stall'] || (state[doneKey + 'Stall'] = { at: -1, n: 0 });
-          if (done.size > stall.at) { stall.at = done.size; stall.n = 0; }
-          if (++stall.n <= 2) { await save(); throw new Renav('the list stopped showing its remaining entries', done.size); }
-          note = `, ${missing} more were listed at first but are no longer shown: run this task again`;
-        }
+        const missing = names.size - done.size;
+        if (missing > 0) await startOver('the list stopped showing its remaining entries', `, ${missing} more were listed at first but are no longer shown: run this task again`);
         break;
       }
       const key = keyOf(el);
       const name = firstText(el);
-      const size = most();
       let outcome, info = {}, error = '';
       if (already && already(el)) {
         count.same++;
@@ -1277,11 +1333,11 @@
             seen = seen || snapshot();
           }
         }
-        if (!items().some((x) => keyOf(x) === key)) await goBack(1);
+        await backToList();
       }
-      done.add(key);
+      done.add(key); // booked once, whatever happens next
       state[doneKey] = [...done];
-      each(name, outcome, done.size, Math.max(size, done.size), info, error);
+      each(name, outcome, done.size, Math.max(names.size, done.size), info, error);
       await save();
     }
     const said = words || { dry: (c) => `${c.dry} would be changed`, done: (c) => `${c.changed} changed of ${done.size}` };
@@ -1922,10 +1978,11 @@
       return b;
     }
 
-    const logButtons = () => (state.opts.saveLog ? [
+    // Always offered. The "Save logs" option decides how much of the log is kept, not whether it can be saved.
+    const logButtons = () => [
       copyButton('copylog', 'Copy log', logText),
       h('button', { class: 'b', name: 'savelog', onclick: () => download(`fb-ad-disable-log-${fileStamp()}.txt`, logText(), 'text/plain') }, 'Save log'),
-    ] : []);
+    ];
 
     function showMenu() {
       mount();
@@ -2004,8 +2061,8 @@
           'Only process advertisers that are new since earlier runs.', known),
         option('saveInfo', pref('saveInfo', false), 'Save advertiser details',
           'Keep everything Facebook shows about each advertiser and add CSV export to the report. Advertisers whose ads are already hidden are opened too, to read their details.'),
-        option('saveLog', pref('saveLog', false), 'Save logs',
-          'Keep the full log and add buttons to copy it or save it to a file.'),
+        option('saveLog', pref('saveLog', true), 'Keep the full log',
+          'Keep every log line of the run, not only the last 300. Copy log and Save log are always there, during the run and in the report.'),
         h('div', { class: 'row' }, 'Speed', speed),
         h('div', { class: 'btns' }, h('button', { class: 'b primary', name: 'start', onclick: go }, 'Start')),
         h('div', { class: 'note' }, 'This tab is driven automatically while the run is in progress. Leave it in the foreground and do not click in it.',
@@ -2043,6 +2100,17 @@
       h('td', null, `${mark(r)} ${r.result}${r.remembered && !/^skipped/.test(r.result) ? ' · remembered' : ''}`));
     const advHead = () => h('thead', null, h('tr', null, h('th', null, 'Advertiser'), h('th', null, 'Details'), h('th', null, 'Result')));
 
+    // The second bar, shown only while advertisers are being processed. null hides it.
+    function paintAdvertisers(p) {
+      if (!advBox) return;
+      advBox.hidden = !p;
+      if (!p) return;
+      const skipped = p.skipped || 0;
+      advBar.style.width = (p.total ? Math.round((p.done / p.total) * 100) : 0) + '%';
+      advLabel.textContent = `Advertisers: ${p.done - skipped} of ${p.total - skipped}${skipped ? ` · ${skipped} skipped (remembered)` : ''}`;
+      paintBar(p.total ? p.done / p.total : 0);
+    }
+
     function showRun() {
       mount();
       stepEl = h('div', { class: 'step', id: 'step' }, 'Starting…');
@@ -2066,6 +2134,9 @@
           onclick: () => { stopRequested = true; stepEl.textContent = 'Stopping…'; } }, 'Stop'), logButtons()));
       logEl.scrollTop = logEl.scrollHeight;
       rowsBox.scrollTop = rowsBox.scrollHeight;
+      // After a page load in the middle of an advertiser step, the advertiser bar comes straight back.
+      const unit = buildUnits(state.opts)[state.idx];
+      if (unit && unit.advertisers && state.adv[unit.id]) paintAdvertisers(state.adv[unit.id]);
       ticker = setInterval(paintEta, 1000);
     }
 
@@ -2109,16 +2180,7 @@
         subEl.textContent = '';
         paintBar();
       },
-      // The second bar, shown only while advertisers are being processed. null hides it.
-      advertisers(p) {
-        if (!advBox) return;
-        advBox.hidden = !p;
-        if (!p) return;
-        const todo = p.total - p.skipped, did = p.done - p.skipped;
-        advBar.style.width = (p.total ? Math.round((p.done / p.total) * 100) : 0) + '%';
-        advLabel.textContent = `Advertisers: ${did} of ${todo}${p.skipped ? ` · ${p.skipped} skipped (remembered)` : ''}`;
-        paintBar(p.total ? p.done / p.total : 0);
-      },
+      advertisers: (p) => paintAdvertisers(p),
       advertiserRow(r) {
         if (!rowsBody || !rowsBody.isConnected) return;
         rowsBody.append(advRow(r));
