@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FB Ad Disable & Privacy Hardener
 // @namespace    https://github.com/privaterra/fb-ad-disable
-// @version      1.2.0
+// @version      1.2.1
 // @description  Opt out of advertiser lists, restrict ad data use and tighten Facebook privacy settings from one menu.
 // @license      MIT
 // @match        https://www.facebook.com/*
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.2.0';
+  const VERSION = '1.2.1';
   const TAG = '[fb-ad-disable]';
   const KEY = 'fbAdDisableState';
   const MEMORY_KEY = 'fbAdDisableAdvertisers';
@@ -64,6 +64,7 @@
     close: { en: ['close'], pt: ['fechar'] },
     hideAds: { en: ['hide ads', 'hide ads from this advertiser', 'hide all ads from this advertiser'], pt: ['ocultar anúncios'] },
     confirm: { en: ['save', 'done', 'confirm', 'save changes'], pt: ['salvar', 'concluir', 'confirmar'] },
+    unavailable: { en: ["this page isn't available right now", "this content isn't available right now"] },
     on: { en: ['on', 'yes', 'enabled'] },
     off: { en: ['off', 'no', 'disabled'] },
   };
@@ -104,19 +105,29 @@
 
   // value: string[] = option to select, boolean = switch position, 'alloff' = turn every switch off.
   const AD_TAB = ['manage info'];
+  // row: the label, newest wording first. already: text the row shows when nothing needs changing.
+  // An option ending in * matches as a prefix.
   const AD_SETTINGS = [
-    { id: 'ad_partners', title: 'Activity information from ad partners', url: ADS, tab: AD_TAB,
-      row: ['activity information from ad partners'], steps: [['review setting', 'review settings']],
-      all: ["no, don't make my ads more relevant"], mode: 'starts', confirm: ['confirm', 'save', 'done'],
-      say: '“No, don’t make my ads more relevant by using this information”' },
+    { id: 'ad_partners', title: 'Activity from other businesses (ad partners)', url: ADS, tab: AD_TAB,
+      row: ['activity from other businesses', 'activity information from ad partners'],
+      already: ['not using this information'], steps: [['review setting', 'review settings']],
+      all: ["no, don't make my ads more relevant*", "don't use*", 'not using*', "no, don't use*"], confirm: ['confirm', 'save', 'done'],
+      say: 'not using this information' },
     { id: 'ad_categories', title: 'Categories used to reach you', url: ADS, tab: AD_TAB,
       row: ['categories used to reach you'], all: 'alloff' },
-    { id: 'ad_outside', title: 'Ads shown outside of Meta', url: ADS, tab: AD_TAB,
-      row: ['ads shown outside of meta', 'ads shown off of meta', 'ads shown off meta', 'ads from ad partners'],
-      all: ['not allowed', "don't allow", "don't show me ads from ad partners", 'no'], elseToggle: false, say: '“Not allowed”' },
+    { id: 'ad_outside', title: 'Ads in other apps (ads shown outside of Meta)', url: ADS, tab: AD_TAB,
+      row: ['ads in other apps', 'ads from ad partners', 'ads shown off of meta', 'ads shown off meta', 'ads shown outside of meta'],
+      already: ['not showing you ads in other apps'],
+      all: ["don't show*", 'not showing*', 'not allowed', "don't allow", 'no'], elseToggle: false, say: 'not showing you ads in other apps' },
+    { id: 'ad_about_meta', title: 'Ads about Meta on other platforms', url: ADS, tab: AD_TAB,
+      row: ['ads about meta'], already: ['not using this information', 'not using your activity', 'not showing'],
+      all: ["don't use*", 'not using*', "don't show*", 'not showing*', 'not allowed', 'no'], elseToggle: false, optional: true,
+      say: 'not using your activity' },
     { id: 'ad_social', title: 'Social interactions in ads', url: ADS, tab: AD_TAB,
       row: ['social interactions'], all: ['only me'] },
   ];
+  const AD_ROWS = ['categories used to reach you', 'audience-based advertising', 'other settings', 'learn more about ads privacy',
+    ...AD_SETTINGS.flatMap((x) => x.row)];
 
   // Settings tabs. A setting can list several: Facebook moves rows between them,
   // so the next tab is tried when the row is not on the first.
@@ -151,7 +162,7 @@
     { id: 'follow', title: 'Who can follow you', urls: [TAB.followers],
       row: ['who can follow me', 'who can follow you'], moderate: FRIENDS, max: FRIENDS },
     { id: 'following', title: 'Who can see the people, Pages and lists you follow', urls: [TAB.followers, TAB.find, TAB.posts],
-      row: ['lists you follow'], moderate: FRIENDS, max: ONLY_ME },
+      row: ['lists you follow', 'who you follow', 'you follow'], moderate: FRIENDS, max: ONLY_ME },
     { id: 'public_comments', title: 'Who can comment on your public posts', urls: [TAB.followers],
       row: ['who can comment on your public posts', 'public post comments'], moderate: FRIENDS, max: FRIENDS },
     { id: 'public_profile_info', title: 'Who can like or comment on public profile info', urls: [TAB.followers],
@@ -237,7 +248,7 @@
 
   class Abort extends Error {}
   class DryRun extends Error {}
-  class Renav extends Error {}
+  class Renav extends Error { constructor(message, progress = 0) { super(message); this.progress = progress; } }
   class RowMissing extends Error {}
 
   // ---------------------------------------------------------------------------
@@ -250,8 +261,9 @@
     for (const n of el.childNodes) if (n.nodeType === 3) s += n.nodeValue;
     return norm(s);
   };
+  // A needle that ends in * matches as a prefix whatever the mode.
   const hit = (text, needles, mode) => !!text && needles.some((n) =>
-    mode === 'exact' ? text === n : mode === 'starts' ? text.startsWith(n) : text.includes(n));
+    n.endsWith('*') ? text.startsWith(n.slice(0, -1)) : mode === 'exact' ? text === n : mode === 'starts' ? text.startsWith(n) : text.includes(n));
 
   const dialogs = () => [...document.querySelectorAll('[role="dialog"]')].filter(visible);
   // A dialog really is in front when a point inside it belongs to it. Facebook keeps other,
@@ -302,6 +314,30 @@
     return found.length ? found : searchText(document.body, needles, mode);
   }
 
+  // The label of a setting: for each wording in turn an exact match, then one that starts
+  // with it, then one that contains it. A heading or a description never wins over the row.
+  function findRow(needles) {
+    for (const mode of ['exact', 'starts', 'includes']) {
+      for (const n of needles) {
+        const el = findText([n], { mode })[0];
+        if (el) return el;
+      }
+    }
+    return null;
+  }
+
+  // The text of the row a label sits in (label, description, current value), without
+  // running into a neighbouring row.
+  function rowText(el, own) {
+    const others = AD_ROWS.filter((x) => !own.includes(x));
+    let p = el;
+    for (let i = 0; i < 10 && p.parentElement && p.parentElement !== document.body; i++, p = p.parentElement) {
+      const text = norm(p.parentElement.textContent);
+      if (text.length > 400 || others.some((x) => text.includes(x))) break;
+    }
+    return norm(p.textContent);
+  }
+
   const findLabel = (needles, root = document) =>
     [...root.querySelectorAll('[aria-label]')].filter((el) => needles.includes(norm(el.getAttribute('aria-label'))) && visible(el));
 
@@ -321,13 +357,13 @@
   // Pause after an action: a fixed delay (the "speed" option), then until the page stops changing.
   const settle = async () => { await sleep(state.opts.delay); await domQuiet(Math.min(400, Math.max(50, state.opts.delay))); check(); };
 
-  async function waitFor(fn, timeout = 10000, what = 'element') {
+  async function waitFor(fn, timeout = 10000, what = 'element', every = 150) {
     const end = Date.now() + timeout;
     for (;;) {
       const v = fn();
       if (v) return v;
       if (Date.now() > end) throw new Error(`could not find ${what}`);
-      await sleep(150);
+      await sleep(every);
     }
   }
 
@@ -467,6 +503,7 @@
 
   async function allSwitchesOff() {
     const root = topLayer() || document.body;
+    if (!switchesIn(root).length) throw new Error('the setting opened, but no switches were found in it');
     let n = 0;
     for (let i = 0; i < 40; i++) {
       const sw = switchesIn(root).find(switchOn);
@@ -626,8 +663,13 @@
       const tab = findText(s.tab)[0];
       if (tab) { click(tab); await settle(); }
     }
-    const row = await waitFor(() => findText(s.row, { mode: 'includes' })[0], 10000).catch(() => null);
+    const row = await waitFor(() => findRow(s.row), 10000, 'row', 300).catch(() => null);
     if (!row) throw new RowMissing(`could not find the “${s.title}” row`);
+    if (s.already) { // the row itself says what the setting is
+      const shown = rowText(row, s.row);
+      const now = s.already.find((x) => shown.includes(x));
+      if (now) return { status: 'already', detail: now };
+    }
 
     if (typeof value === 'boolean') {
       const onlyInLayer = () => { const layer = topLayer(); const list = layer ? switchesIn(layer) : []; return list.length === 1 ? list[0] : null; };
@@ -676,19 +718,24 @@
   function snapshot() {
     const layer = topLayer();
     const root = layer || document.querySelector('[role="main"]') || document.body;
+    const KIND = '[role]:not([role="main"]):not([role="dialog"]):not([role="none"]):not([role="presentation"]),a,button,h1,h2,h3,h4,label';
     const texts = [];
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    for (let n = walker.nextNode(); n && texts.length < 40; n = walker.nextNode()) {
+    for (let n = walker.nextNode(); n && texts.length < 60; n = walker.nextNode()) {
       const el = n.parentElement;
       const text = clip(n.nodeValue, 70);
-      if (text.length < 3 || !el || /^(SCRIPT|STYLE|NOSCRIPT)$/.test(el.tagName) || texts.includes(text) || !visible(el)) continue;
-      texts.push(text);
+      if (text.length < 3 || !el || /^(SCRIPT|STYLE|NOSCRIPT)$/.test(el.tagName) || !visible(el)) continue;
+      const holder = el.closest(KIND);
+      const kind = holder ? `‹${holder.getAttribute('role') || holder.tagName.toLowerCase()}›` : '';
+      if (!texts.some((x) => x.startsWith(text))) texts.push(text + kind);
     }
+    const named = [...root.querySelectorAll('[role="button"][aria-label],button[aria-label],a[aria-label]')].filter(visible).slice(0, 8)
+      .map((el) => `button “${clip(el.getAttribute('aria-label'), 30)}”`);
     const controls = [...root.querySelectorAll('[role="radio"],[role="menuitemradio"],[role="switch"],[role="checkbox"],input[type="checkbox"],input[type="radio"]')]
       .filter(visible).slice(0, 15)
       .map((el) => `${el.getAttribute('role') || el.type} ${(el.matches('input') ? el.checked : el.getAttribute('aria-checked') === 'true') ? 'on' : 'off'} “${clip(switchLabel(el), 40)}”`);
-    return `${layer ? 'pop-up on' : 'page'} ${location.pathname}${location.search} | text: ${texts.join(' · ')} | controls: ${controls.join(', ') || 'none'}`
-      .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, '[email]').replace(/\+?\d[\d\s().-]{6,}\d/g, '[number]').slice(0, 1500);
+    return `${layer ? 'pop-up on' : 'page'} ${location.pathname}${location.search} | text: ${texts.join(' · ')} | controls: ${[...controls, ...named].join(', ') || 'none'}`
+      .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, '[email]').replace(/\+?\d[\d\s().-]{6,}\d/g, '[number]').slice(0, 2500);
   }
 
   // "Limit past posts": a button, then a confirmation with the same label.
@@ -718,7 +765,21 @@
       .filter((a) => keyOf(a).replace(/\/+$/, '') !== base);
     const o = state.opts;
     const done = new Set(state.listsDone || []);
-    const tally = state.listsTally || (state.listsTally = { changed: 0, none: 0, failed: 0, dry: 0, skipped: 0 });
+    const tally = state.listsTally || (state.listsTally = { changed: 0, none: 0, failed: 0, dry: 0, skipped: 0, bare: 0 });
+    tally.bare = tally.bare || 0;
+    const listUrl = this.url;
+    // Back to the list after an advertiser. Facebook opens an advertiser either as a page of its
+    // own (the address changes) or as a panel over the list. For a page: go back only until the
+    // list's address is showing again, never further. For a panel: one Back per level opened.
+    const backToList = async (depth, moved) => {
+      if (!moved) { await goBack(depth); return; }
+      for (let i = 0; i < depth + 2 && !at(listUrl); i++) {
+        const backs = findLabel(t('back'));
+        if (backs.length) click(backs[backs.length - 1]); else history.back();
+        await settle();
+      }
+    };
+    const broken = () => findText(t('unavailable'), { mode: 'includes' }).length > 0;
     const prog = state.adv.lists || (state.adv.lists = { done: 0, total: 0, skipped: 0 });
     const known = o.remember || o.skipKnown ? await memory.load() : {};
     const expand = async () => {
@@ -770,7 +831,7 @@
 
       const next = anchors().find((a) => !done.has(keyOf(a)));
       if (!next) {
-        if (done.size && !anchors().length && !at(this.url)) throw new Renav('the advertiser list is no longer open');
+        if (done.size && !anchors().length && (!at(listUrl) || broken())) throw new Renav('the advertiser list is no longer open', done.size);
         break;
       }
       const started = Date.now();
@@ -779,18 +840,22 @@
       const name = say(item || next) || key;
       const rec = { task: 'list-based', name, advertiser_id: advertiserId(next.href), link: next.href,
         list_text: clip((item || next).textContent, 300) };
-      let depth = 0, confirmed = false;
+      let depth = 0, confirmed = false, moved = false;
       try {
         const opener = (item && item.querySelector('a[role="link"]')) || next;
-        opener.addEventListener('click', (e) => e.preventDefault(), { once: true }); // open the side panel, not a new page
+        opener.addEventListener('click', (e) => e.preventDefault(), { once: true }); // let the page open it, not the browser
         click(opener);
         depth++;
         await settle();
+        moved = !at(listUrl);
+        // Facebook's own error page. Its "Reload page" button is left alone: a reload would cut the run short.
+        if (broken()) throw new Error('Facebook showed “This page isn’t available right now”');
         const uploaded = await waitFor(() => findText(t('theyUploaded'), { mode: 'includes' })[0], 8000).catch(() => null);
-        if (o.saveInfo) {
-          const layer = topLayer();
-          rec.detail_text = layer ? clip(layer.innerText, 1000) : '';
-          rec.facebook_page = (layer ? [...layer.querySelectorAll('a[href]')].map((a) => a.href) : []).find((x) => !x.includes(base)) || '';
+        if (o.saveInfo) { // the advertiser's panel, or its page when it opened as one
+          const box = topLayer() || (moved ? document.querySelector('[role="main"]') || document.body : null);
+          rec.detail_text = box ? clip(box.innerText, 1000) : '';
+          rec.facebook_page = (box ? [...box.querySelectorAll('a[href]')].map((a) => a.href) : [])
+            .find((x) => !x.includes(base) && !/accountscenter\.facebook\.com/.test(x)) || '';
         }
         if (uploaded) { click(uploaded); depth++; await settle(); }
         if (o.saveInfo) rec.list_uses = listUses();
@@ -812,11 +877,17 @@
           tally.changed++;
           rec.result = 'disabled';
           rec.action = `clicked “Don’t allow” ${clicks}×`;
-        } else {
+        } else if (confirmed) {
           tally.none++;
           rec.result = 'no change needed';
           rec.action = 'none';
           log(`  ${name}: nothing to change`);
+        } else { // neither "Don't allow" nor "Allow": nothing on this page was recognised
+          tally.bare++;
+          rec.result = 'no list controls found';
+          rec.action = 'none';
+          state.listsSeen = state.listsSeen || snapshot();
+          log(`  ${name}: no list controls found`);
         }
       } catch (e) {
         if (e instanceof Abort) throw e;
@@ -829,10 +900,11 @@
           tally.failed++;
           rec.result = 'failed';
           rec.error = e.message;
+          state.listsSeen = state.listsSeen || snapshot();
           log(`  ${name}: ${e.message}`);
         }
       }
-      await goBack(depth);
+      await backToList(depth, moved);
       done.add(key);
       state.listsDone = [...done];
       record(rec);
@@ -848,60 +920,85 @@
 
     if (!done.size) throw new Error('no list-based advertisers were found on this page');
     const skipped = tally.skipped ? `, ${tally.skipped} skipped as remembered` : '';
+    const bare = tally.bare ? `, ${tally.bare} had no list controls` : '';
     const detail = o.dryRun
-      ? `${tally.dry} of ${done.size} advertisers would be disabled${skipped}`
-      : `${tally.changed} disabled, ${tally.none} needed no change, ${tally.failed} failed (of ${done.size})${skipped}`;
-    return { status: o.dryRun ? 'dry' : tally.failed && !tally.changed ? 'manual' : tally.changed ? 'changed' : 'already', detail };
+      ? `${tally.dry} of ${done.size} advertisers would be disabled${bare}${tally.failed ? `, ${tally.failed} failed` : ''}${skipped}`
+      : `${tally.changed} disabled, ${tally.none} needed no change${bare}, ${tally.failed} failed (of ${done.size})${skipped}`;
+    // Nothing recognised on any advertiser page means the labels are wrong, not that all is well.
+    const lost = tally.failed + tally.bare > 0 && tally.changed + tally.none + tally.dry === 0;
+    const status = lost ? 'manual' : o.dryRun ? 'dry' : tally.changed ? 'changed' : 'already';
+    return { status, detail, seen: tally.failed + tally.bare ? state.listsSeen : '' };
   }
 
   // Walks a list one entry at a time: open it, run `action`, come back.
-  async function drillList(doneKey, action) {
+  // words: how to phrase the result; each(name, outcome) is told about every entry.
+  async function drillList(doneKey, action, { words, each = () => {}, ignore = [] } = {}) {
     const scope = () => topLayer() || document.body;
-    const skip = [...t('back'), ...t('close'), ...t('seeAll'), ...t('seeMore'), ...t('confirm')];
+    const skip = [...t('back'), ...t('close'), ...t('seeAll'), ...t('seeMore'), ...t('confirm'), ...ignore];
     const items = () => {
-      const list = [...scope().querySelectorAll('[role="listitem"]')].filter((el) => visible(el) && norm(el.textContent));
+      const list = [...scope().querySelectorAll('[role="listitem"],[role="row"]')].filter((el) => visible(el) && norm(el.textContent));
       if (list.length || !topLayer()) return list;
       // A pop-up whose entries are plain buttons or links.
-      return [...scope().querySelectorAll('[role="button"],[role="link"],a[href]')].filter((el) => {
+      return [...scope().querySelectorAll('[role="button"],[role="link"],a[href],[tabindex="0"]')].filter((el) => {
         const text = norm(el.textContent);
         return visible(el) && text.length > 1 && text.length < 80 && !skip.includes(text) && !skip.includes(norm(el.getAttribute('aria-label')));
       });
     };
     const keyOf = (el) => norm(el.textContent).slice(0, 80);
     const done = new Set(state[doneKey] || []);
-    let changed = 0, dry = 0, fails = 0;
+    const count = state[doneKey + 'Count'] || (state[doneKey + 'Count'] = { changed: 0, dry: 0, same: 0, failed: 0 });
+    let fails = 0, seen = '';
 
     await waitFor(() => items().length, 8000, 'a list on this page');
-    while (fails < 3 && done.size < 300) {
+    const total = () => new Set([...done, ...items().map(keyOf)]).size;
+    each(null, null, done.size, total());
+    while (fails < 3 && done.size < 500) {
       check();
       const el = items().find((x) => !done.has(keyOf(x)));
       if (!el) break;
       const key = keyOf(el);
+      const name = clip(el.textContent, 70);
+      const size = total();
+      let outcome;
       try {
         click(el.querySelector('a,[role="button"],[role="link"]') || el);
         await settle();
         const r = await action();
-        if (r.status === 'changed') { changed++; await confirmIf(); }
+        if (r.status === 'changed') { count.changed++; outcome = 'changed'; await confirmIf(); } else { count.same++; outcome = 'same'; }
         fails = 0;
       } catch (e) {
         if (e instanceof Abort) throw e;
-        if (e instanceof DryRun) { dry++; fails = 0; } else { fails++; log(`  ${key}: ${e.message}`); }
+        if (e instanceof DryRun) { count.dry++; outcome = 'dry'; fails = 0; } else {
+          count.failed++;
+          outcome = 'failed';
+          fails++;
+          seen = seen || snapshot();
+          log(`  ${name}: ${e.message}`);
+        }
       }
       if (!items().some((x) => keyOf(x) === key)) await goBack(1);
       done.add(key);
       state[doneKey] = [...done];
+      each(name, outcome, done.size, Math.max(size, done.size));
       await save();
     }
-    if (fails >= 3) throw new Error(`stopped after repeated failures (${changed} changed)`);
-    if (state.opts.dryRun) return { status: 'dry', detail: `${dry} would be changed` };
-    return { status: changed ? 'changed' : 'already', detail: `${changed} changed of ${done.size}` };
+    const said = words || { dry: (n) => `${n} would be changed`, done: (n) => `${n} changed of ${done.size}` };
+    if (fails >= 3 && !(count.changed + count.dry + count.same)) {
+      const e = new Error('none of the entries in the list could be handled');
+      e.seen = seen;
+      throw e;
+    }
+    const failed = count.failed ? `, ${count.failed} could not be handled` : '';
+    if (state.opts.dryRun) return { status: 'dry', detail: said.dry(count.dry) + failed, seen };
+    return { status: count.changed ? 'changed' : 'already', detail: said.done(count.changed) + failed, seen };
   }
 
   // "Hide ads" for every advertiser Facebook lists.
   async function runSeen() {
-    const expand = findText([...t('seeMore'), ...t('seeAll')]);
+    // Only inside the open pop-up when there is one: a "See all" on the page behind it is another list.
+    const expand = searchText(topLayer() || document.body, [...t('seeMore'), ...t('seeAll')], 'exact');
     if (expand.length) { expand.forEach(click); await settle(); }
-    await waitFor(() => findText(t('hideAds')).length, 8000).catch(() => null);
+    await waitFor(() => findText(t('hideAds')).length, 5000).catch(() => null);
 
     const prog = state.adv.seen || (state.adv.seen = { done: 0, total: 0, skipped: 0 });
     prog.total = Math.max(prog.total, prog.done + findText(t('hideAds')).length);
@@ -942,12 +1039,30 @@
     if (n + dry) return state.opts.dryRun ? { status: 'dry', detail: `${dry} advertisers would be hidden` } : { status: 'changed', detail: `${n} advertisers hidden` };
 
     // No "Hide ads" buttons in the list itself: open each advertiser and look inside.
-    if (!/advertis/i.test(location.pathname)) throw new Error('the advertisers list was not found');
+    const listed = /advertis/i.test(location.pathname) ||
+      findText(['advertisers you saw ads from', "advertisers you've seen", 'advertisers you have seen'], { mode: 'includes' }).length > 0;
+    if (!listed) throw new Error('the advertisers list was not found');
+    let last = Date.now();
     return drillList('seenDone', async () => {
       const btn = await waitFor(() => findText(t('hideAds'))[0], 4000, '“Hide ads”');
       act(btn, 'hide ads');
       await settle();
       return { status: 'changed' };
+    }, {
+      ignore: ['all advertisers', 'all accounts'], // the filters above the list
+      words: { dry: (n) => `${n} advertisers would be hidden`, done: (n) => `${n} advertisers hidden` },
+      each: (name, outcome, did, total) => {
+        prog.done = did;
+        prog.total = Math.max(prog.total, total);
+        ui.advertisers(prog);
+        if (name) {
+          record({ task: 'seen', name, action: outcome === 'changed' ? 'clicked “Hide ads”' : 'none',
+            result: { changed: 'ads hidden', dry: 'would be hidden (dry run)', same: 'no change needed', failed: 'failed' }[outcome] });
+          tick('seen', last);
+        }
+        last = Date.now();
+        eta();
+      },
     });
   }
 
@@ -959,7 +1074,8 @@
     if (!label) throw new RowMissing('could not find the “Ad topics” section');
     const all = rowButton(label, [...t('seeAll'), 'view and manage topics', 'see all topics']); // "See all" next to it
     await openRow(all || label);
-    return drillList('topicsDone', () => choose(['see less'], 'exact', 4000));
+    return drillList('topicsDone', () => choose(['see less'], 'exact', 4000),
+      { words: { dry: (n) => `${n} topics would be set to “See less”`, done: (n) => `${n} topics set to “See less”` } });
   }
 
   // Finds a row, walking down the Accounts Center menus to it when it is not on screen yet.
@@ -1063,9 +1179,10 @@
     if (on('adsettings')) for (const s of AD_SETTINGS) units.push(setting(s, s.all));
     if (on('topics')) units.push({ id: 'topics', title: 'Ad topics: See less', url: ADS,
       manual: 'On the “Customize ads” tab, click “See all” next to “Ad topics”, then choose “See less” for each topic.', run: runTopics });
-    if (on('offclear')) units.push({ id: 'offclear', title: 'Clear off-Meta activity history', ...where('offclear', offMeta),
+    const gone = 'Facebook does not offer this on your account. Meta is replacing it with “Activity from other businesses”, which the ad data task sets';
+    if (on('offclear')) units.push({ id: 'offclear', title: 'Clear off-Meta activity history', optional: true, gone, ...where('offclear', offMeta),
       manual: 'Accounts Center → Your information and permissions → Your activity off Meta technologies → “Clear previous activity”, then confirm.', run: runOffClear });
-    if (on('offfuture')) units.push({ id: 'offfuture', title: 'Disconnect future off-Meta activity', ...where('offfuture', offMeta),
+    if (on('offfuture')) units.push({ id: 'offfuture', title: 'Disconnect future off-Meta activity', optional: true, gone, ...where('offfuture', offMeta),
       manual: 'Accounts Center → Your information and permissions → Your activity off Meta technologies → “Manage future activity” → “Disconnect future activity”, then confirm.', run: runOffFuture });
     if (on('ai')) {
       for (const s of AI_SETTINGS) units.push(setting(s, s.all));
@@ -1115,17 +1232,23 @@
             res = await unit.run();
           } catch (e) {
             if (e instanceof Abort) throw e;
-            if (e instanceof Renav && (state.renav[unit.id] = (state.renav[unit.id] || 0) + 1) <= 2) await hardNav(unit);
+            if (e instanceof Renav) { // reload the page, as long as each reload gets further than the last
+              if (e.progress > (state.renavAt[unit.id] ?? -1)) { state.renavAt[unit.id] = e.progress; state.renav[unit.id] = 0; }
+              if ((state.renav[unit.id] = (state.renav[unit.id] || 0) + 1) <= 2) await hardNav(unit);
+            }
+            const tried = state.altSeen[unit.id] || (state.altSeen[unit.id] = []);
             if (e instanceof RowMissing && unit.next) { // Facebook may keep this row on another page
+              tried.push(snapshot());
               state.alt[unit.id] = (state.alt[unit.id] || 0) + 1;
               log('  not on this page, trying the next one');
               await closeLayers();
               units = buildUnits(state.opts);
               continue;
             }
+            const seen = [...tried, e.seen || snapshot()].join(' || ').slice(0, 6000);
             if (e instanceof DryRun) res = { status: 'dry', detail: 'would ' + e.message };
-            else if (e instanceof RowMissing && unit.optional) res = { status: 'info', detail: 'this setting is not shown for your account' };
-            else res = { status: 'manual', detail: e.message, seen: snapshot() };
+            else if (e instanceof RowMissing && unit.optional) res = { status: 'info', detail: unit.gone || 'this setting is not shown for your account', seen };
+            else res = { status: 'manual', detail: e.message, seen };
           }
         }
         log(`  ${STATUS[res.status].text}${res.detail ? ': ' + res.detail : ''}`);
@@ -1157,7 +1280,9 @@
       alert('fb-ad-disable: log in to Facebook first, then start again.');
       return;
     }
-    state = upgrade({ v: 2, running: true, opts, idx: 0, navFor: null, navAt: 0, alias: {}, renav: {}, results: [], log: [] });
+    state = upgrade({ v: 2, running: true, opts, idx: 0, navFor: null, navAt: 0, alias: {}, renav: {}, results: [], log: [],
+      runId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}` });
+    markTab();
     log(`fb-ad-disable ${VERSION} · ${MODE} mode${opts.dryRun ? ' · DRY RUN (nothing will be changed)' : ''}`);
     await save();
     runQueue();
@@ -1167,15 +1292,35 @@
   function upgrade(st) {
     st.adv = st.adv || {};
     st.alt = st.alt || {};
+    st.altSeen = st.altSeen || {};
+    st.renavAt = st.renavAt || {};
+    st.reloads = st.reloads || {};
     st.timing = st.timing || { unitMs: 0, units: 0, adv: {} };
     st.records = st.records || [];
     return st;
   }
 
-  async function resume() {
+  // Marks this tab as the one doing the run, so only it picks the run up after a reload.
+  const TAB_KEY = KEY + 'Tab';
+  const markTab = () => { try { sessionStorage.setItem(TAB_KEY, String(state.runId)); } catch (e) { /* storage blocked */ } };
+  const isRunTab = (st) => { try { return !!st.runId && sessionStorage.getItem(TAB_KEY) === String(st.runId); } catch (e) { return false; } };
+
+  // reloaded: the page reloaded in the middle of a step, which the script did not ask for.
+  async function resume(reloaded = false) {
     upgrade(state);
+    if (reloaded) {
+      const n = state.reloads[state.idx] = (state.reloads[state.idx] || 0) + 1;
+      log(`The page reloaded during step ${state.idx + 1}; ${n > 2 ? 'skipping it' : 'trying it again'}.`);
+      if (n > 2) { // do not loop on a step that reloads the page every time
+        const unit = buildUnits(state.opts)[state.idx];
+        if (unit) state.results.push({ id: unit.id, title: unit.title, url: unit.url, manual: unit.manual, status: 'manual', detail: 'the page kept reloading', seen: '' });
+        state.idx++;
+      }
+      state.navFor = null;
+    }
     state.running = true;
     state.navAt = 0; // claim the run so no other tab resumes it
+    markTab();
     await save();
     runQueue();
   }
@@ -1185,7 +1330,7 @@
     already: { icon: '☑️', text: 'Already set' },
     dry: { icon: '👁', text: 'Dry run' },
     manual: { icon: '⚠️', text: 'Needs manual check' },
-    info: { icon: 'ℹ️', text: 'Nothing to change' },
+    info: { icon: 'ℹ️', text: 'Nothing to do' },
   };
 
   function reportText() {
@@ -1506,6 +1651,12 @@
     // A run that navigated moments ago continues by itself. Anything older waits for "Resume it".
     const fresh = saved && saved.running && saved.navAt && Date.now() - saved.navAt < (MODE === 'console' ? 15 * 60e3 : 2 * 60e3);
     if (fresh) { state = saved; resume(); return; }
+    // The page reloaded under a run in this very tab (Facebook does that at times): carry on.
+    if (MODE !== 'console' && saved && saved.running && isRunTab(saved) && Date.now() - (saved.savedAt || 0) < 10 * 60e3) {
+      state = saved;
+      resume(true);
+      return;
+    }
 
     if (MODE === 'console') { api.open(); return; }
     if (MODE === 'userscript') {

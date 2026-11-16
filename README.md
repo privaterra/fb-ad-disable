@@ -94,7 +94,7 @@ Each step ends in one of these states:
 | ☑️ Already set | The setting already had the wanted value. |
 | 👁 Dry run | What would be changed. |
 | ⚠️ Needs manual check | The script could not do it. Use the **Open page** link and set the value shown. |
-| ℹ️ Nothing to change | The page has nothing for this step (for example no AI switches). |
+| ℹ️ Nothing to do | The page has nothing for this step: no AI switches, or a setting Facebook no longer offers on your account. |
 
 When a step fails, the report keeps **What the page showed**: the text and controls that were on screen at that moment, with email addresses and long numbers removed. That is what makes a wrong label fixable, so include it when you report a problem (**Copy report** contains it). It is your own settings page, so read it before sharing.
 
@@ -143,12 +143,16 @@ With **Save logs** on, **Copy log** and **Save log** appear during the run and i
 | Task | Where | What happens |
 | --- | --- | --- |
 | **Disable list-based advertisers** | Accounts Center → Ad preferences → Audience-based advertising | For every advertiser: open it → *They uploaded or used a list to reach you* → **Don't allow**, for both showing you ads and excluding you from ads. This is the original script this project grew from. |
-| **Hide advertisers you have seen** | Ad preferences → Advertisers | Clicks **Hide ads** for each advertiser. |
-| **Restrict ad data settings** | Ad preferences → Manage info | *Activity information from ad partners* → "No, don't make my ads more relevant…" · *Categories used to reach you* → all off · *Ads shown outside of Meta* → not allowed · *Social interactions* → Only me. |
-| **Clear off-Meta activity history** | Your activity off Meta technologies | **Clear previous activity**. |
-| **Disconnect future off-Meta activity** (off by default; Max ticks it) | same page | *Manage future activity* → **Disconnect future activity**. Side effect: "Log in with Facebook" on other sites and apps stops working. |
+| **Hide advertisers you have seen** | Ad preferences → Advertisers you saw ads from | Opens each advertiser in the list and clicks **Hide ads**. |
+| **Restrict ad data settings** | Ad preferences → Manage info | *Activity from other businesses* (formerly "Activity information from ad partners") → not using this information · *Categories used to reach you* → all off · *Ads in other apps* (under "Ads shown outside of Meta") → not showing · *Ads about Meta* → not using your activity · *Social interactions* → Only me. A row that already says so ("Not using this information") is left untouched. |
+| **Clear off-Meta activity history** | Accounts Center → Your information and permissions → Your activity off Meta technologies | **Clear previous activity**. See the note below. |
+| **Disconnect future off-Meta activity** (off by default; Max ticks it) | same page | *Manage future activity* → **Disconnect future activity**. Side effect: "Log in with Facebook" on other sites and apps stops working. See the note below. |
 | **Ad topics: See less** (experimental, off by default) | Ad preferences → Customize ads → Ad topics → See all | Opens each topic and picks **See less**. |
 | **Turn off AI features** | Settings → Posts, Stories, Reels, Profile and tagging, Followers and public content | Turns off **Allow comment summaries on your posts** and any other switch on those pages whose label mentions AI. Lists the AI settings that have no switch on the web (see below). |
+
+### Off-Meta activity is being retired
+
+Meta has been removing "Your activity off Meta technologies" for accounts in the US and other countries since mid-2026 and folding it into **Activity from other businesses**. On such an account the old page says "This content isn't available right now", and the two off-Meta tasks report "Nothing to do" and say why. The setting that replaces them is covered by **Restrict ad data settings**. Where the old setting still exists, the tasks work as described.
 
 ### AI features: what can and cannot be switched off
 
@@ -160,7 +164,7 @@ Meta gives no single switch for AI, and Meta AI itself (in search and Messenger)
   - *Use of your information to train Meta AI*: no switch exists. Where your region allows it, the Privacy Center page on generative AI links to the objection form.
   - *Meta AI chats and memory*: delete them in Meta AI's own settings; you can mute the Meta AI chat in Messenger.
 - Instagram, WhatsApp and Messenger have their own settings and are outside this script, which only runs on facebook.com.
-- If Facebook does not show the comment summaries setting for your account, the report says "Nothing to change".
+- If Facebook does not show the comment summaries setting for your account, the report says "Nothing to do".
 
 ## Privacy levels
 
@@ -199,13 +203,15 @@ Where Facebook offers nothing stricter than Friends (followers, public comments)
 
 - The engine (menu, page navigation and resume, text matching, dry run, progress bars, remembered advertisers, CSV and log export, reporting, the three run modes) is covered by automated tests that drive the real script in Chromium against mock Facebook pages: `npm test`.
 - The advertiser-list flow keeps the click sequence of the original console script this project started from.
-- The automated tests cannot log in to Facebook, so no flow is verified end to end on a live account by them. The setting names come from Meta's help pages and from failure reports of real runs; version 1.2.0 reworked the eleven steps that a live run reported as failing, and those changes are not yet confirmed on a live account. That is why every step is reported and why you should start with a dry run.
+- The automated tests cannot log in to Facebook, so no flow is verified end to end on a live account by them. The setting names come from Meta's help pages and from failure reports of real runs; versions 1.2.0 and 1.2.1 reworked the steps that live runs reported as failing; after 1.2.1 a live dry run completed every audience and visibility setting, while the advertiser steps and the renamed ad rows are reworked but not yet confirmed. That is why every step is reported and why you should start with a dry run.
 
 A safety rule that is tested: an option such as "Friends" or "Only me" is only ever clicked inside a dialog, menu or radio group, never elsewhere on the page.
 
 ## Troubleshooting
 
 - **Reporting a problem.** Use **Copy report** and paste it; for more detail run again with **Save logs** ticked and attach the saved log file. Both contain "what the page showed" for each failed step.
+- **The page reloaded during a run.** In the extension and userscript the same tab carries on by itself from the step it was on (a step that reloads three times is skipped and reported). In console mode, run the script again.
+- **"Had no list controls" or "failed" advertisers.** An advertiser page without "Don't allow" / "Allow" buttons, or one where Facebook shows "This page isn't available right now", is counted separately and never reported as done. The report keeps what the first such page showed.
 - **A row has moved.** Facebook moves settings between pages. For rows known to move, the script tries the next settings page by itself (the log says "not on this page, trying the next one").
 - **Many steps say "Needs manual check".** Check Facebook is in English (US), try *Slow* speed, and run again; finished steps are quick the second time because they report "Already set".
 - **The panel vanished (console mode).** The page reloaded. Run the script again and it resumes.

@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { chromium } = require('playwright');
-const { pages } = require('./mock/pages');
+const { pages, redirects } = require('./mock/pages');
 
 const ROOT = path.join(__dirname, '..');
 const SCRIPT = fs.readFileSync(path.join(ROOT, 'fb-ad-disable.js'), 'utf8');
@@ -15,7 +15,7 @@ const LIB = fs.readFileSync(path.join(__dirname, 'mock', 'lib.js'), 'utf8');
 
 // Serves the mock pages on the real Facebook hostnames. `inject` adds the script
 // to every page, the way a userscript manager would.
-async function mockFacebook(context, { inject = false } = {}) {
+async function mockFacebook(context, { inject = false, offMeta = false } = {}) {
   const events = [];
   await context.exposeFunction('__record', (json) => { events.push(JSON.parse(json)); });
   await context.route('**/*', (route) => route.abort()); // never touch the real internet
@@ -26,10 +26,15 @@ async function mockFacebook(context, { inject = false } = {}) {
     const js = (body) => route.fulfill({ contentType: 'text/javascript; charset=utf-8', body });
     if (p === '/__mock.js') return js(LIB);
     if (p === '/__fbad.js') return js(SCRIPT);
+    const to = redirects[`${host} ${p}`];
+    if (to) { // Facebook redirects on the server, so no script ever runs on this address
+      return route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<script>location.replace(${JSON.stringify(to)})</script>` });
+    }
     const page = pages[`${host} ${p}`];
     return route.fulfill({
       contentType: 'text/html; charset=utf-8',
       body: `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>mock</title></head><body><div id="main"></div>
+        <script>window.__flags = ${JSON.stringify({ offMeta })}</script>
         <script src="/__mock.js"></script><script>(${page ? page.toString() : '() => {}'})()</script>
         ${inject ? '<script src="/__fbad.js"></script>' : ''}</body></html>`,
     });
@@ -100,7 +105,7 @@ after(async () => { await browser.close(); });
 
 test('userscript mode, Max level: every task runs across both sites', async () => {
   const context = await browser.newContext();
-  const events = await mockFacebook(context, { inject: true });
+  const events = await mockFacebook(context, { inject: true, offMeta: true });
   await fakeUserscriptApi(context);
   const page = await context.newPage();
   await page.goto('https://www.facebook.com/settings/');
@@ -117,7 +122,9 @@ test('userscript mode, Max level: every task runs across both sites', async () =
   assert.deepEqual(listuse, ['1:0:false', '1:1:false', '3:0:false', '3:1:false', '4:1:false']);
   assert.equal(events.filter((e) => e.type === 'navigated').length, 0, 'advertiser links must not navigate');
   assert.equal(r.lists.status, 'changed');
-  assert.match(r.lists.text, /3 disabled, 2 needed no change, 0 failed \(of 5\)/);
+  // One advertiser page has no list controls and one is Facebook's error page: both are said, neither stops the run.
+  assert.match(r.lists.text, /3 disabled, 1 needed no change, 1 had no list controls, 1 failed \(of 6\)/);
+  assert.match(r.lists.text, /What the page showed/);
 
   assert.deepEqual(events.filter((e) => e.type === 'hide').map((e) => e.name).sort(), ['Acme', 'Globex', 'Hooli', 'Initech', 'Umbrella']);
 
@@ -126,14 +133,14 @@ test('userscript mode, Max level: every task runs across both sites', async () =
   assert.equal(events.filter((e) => e.type === 'offfuture').length, 1);
 
   assert.deepEqual(sets(events), {
-    ad_partners: 'No', ad_outside: 'Not allowed', ad_social: 'Only me',
+    ad_partners: 'off', ad_outside: 'off', ad_about_meta: false, ad_social: 'Only me',
     future_posts: 'Only me', past_posts: true, friend_requests: 'Friends of friends', friends_list: 'Only me',
     lookup_email: 'No one', search_engines: false, follow: 'Friends', following: 'Only me',
     public_comments: 'Friends', post_on_profile: 'Only me', others_posts: 'Only me',
     tagged_posts: 'Only me', review_tagged: true, review_tags: true, share_to_stories: false,
     ai_summaries: false, reel_ai: false,
   });
-  assert.equal(events.filter((e) => e.type === 'set').length, 20, 'each setting is changed exactly once');
+  assert.equal(events.filter((e) => e.type === 'set').length, 21, 'each setting is changed exactly once');
   assert.deepEqual(events.filter((e) => e.type === 'decoy'), [],
     'nothing outside the open pop-up is clicked: not the "Friends" link, the off-screen dialog or another row\'s button');
 
@@ -168,7 +175,13 @@ test('dry run changes nothing and reports what it would do', async () => {
 
   assert.deepEqual(events, [], 'no setting is touched');
   assert.equal(r.lists.status, 'dry');
-  assert.match(r.lists.text, /3 of 5 advertisers would be disabled/);
+  assert.match(r.lists.text, /3 of 6 advertisers would be disabled, 1 had no list controls, 1 failed/);
+  // This account no longer has the off-Meta setting: said plainly, not reported as a failure.
+  for (const id of ['offclear', 'offfuture']) {
+    assert.equal(r[id].status, 'info');
+    assert.match(r[id].text, /Facebook does not offer this on your account/);
+  }
+  assert.equal(r.ad_partners.status, 'dry');
   assert.match(r.seen.text, /5 advertisers would be hidden/);
   assert.equal(r.future_posts.status, 'dry');
   assert.match(r.future_posts.text, /would select “Friends”/);
@@ -244,43 +257,46 @@ test('progress bars, advertiser details CSV, saved log and remembered advertiser
 
   // Run 1: two bars and a time estimate while advertisers are processed.
   await configureAndStart(page, { tasks: ['lists', 'seen'], options: { saveInfo: true, saveLog: true } });
-  await p.locator('#advlabel', { hasText: /^Advertisers: \d of 5$/ }).waitFor();
+  await p.locator('#advlabel', { hasText: /^Advertisers: \d of 6$/ }).waitFor();
   assert.equal(await p.locator('[role="progressbar"]').count(), 2);
   assert.match(await p.locator('#eta').textContent(), /^Time left: (under a minute|about \d+ min)/);
   assert.match(await p.locator('#step').textContent(), /^Step 1 of 2: /);
   await p.locator('button[name="savelog"]').waitFor(); // available during the run too
   let r = await report(page);
-  assert.match(r.lists.text, /3 disabled, 2 needed no change, 0 failed \(of 5\)$/);
+  assert.match(r.lists.text, /3 disabled, 1 needed no change, 1 had no list controls, 1 failed \(of 6\)/);
   assert.equal(listuse(), 5);
 
   // Issue 4: the details table and its CSV.
-  assert.equal(await p.locator('#advertisers tbody tr').count(), 10);
+  assert.equal(await p.locator('#advertisers tbody tr').count(), 11);
   const csv = await saved(page, 'csv');
   assert.match(csv.file, /^fb-ad-disable-advertisers-[\d-]+\.csv$/);
   const rows = parseCsv(csv.text.replace(/^\uFEFF/, ''));
-  assert.equal(rows.length, 10);
+  assert.equal(rows.length, 11);
   const broker = rows.find((x) => x.name === 'Data Broker One');
   assert.equal(broker.task, 'list-based');
-  assert.equal(broker.advertiser_id, '1');
+  assert.equal(broker.advertiser_id, '1000001');
   assert.equal(broker.result, 'disabled');
   assert.equal(broker.action, 'clicked “Don’t allow” 2×');
   assert.equal(broker.list_uses, 'Showing ads to you using a list: allowed | Excluding you from ads using a list: allowed');
-  assert.match(broker.link, /advertiser_id=1$/);
+  assert.match(broker.link, /\/ads\/audience_based_advertising\/1000001\//);
   assert.match(broker.detail_text, /You may have interacted with their website/);
   assert.match(broker.processed_at, /^\d{4}-\d\d-\d\dT/);
   assert.equal(broker.dry_run, 'no');
   assert.equal(rows.find((x) => x.name === 'Half Done LLC').list_uses,
     'Showing ads to you using a list: not allowed | Excluding you from ads using a list: allowed');
-  assert.equal(rows.find((x) => x.name === 'No List Corp').result, 'no change needed');
+  assert.equal(rows.find((x) => x.name === 'No List Corp').result, 'no list controls found');
+  const brokenRow = rows.find((x) => x.name === 'Broken Page Ltd');
+  assert.equal(brokenRow.result, 'failed');
+  assert.match(brokenRow.error, /This page isn’t available right now/);
   assert.deepEqual(rows.filter((x) => x.task === 'seen').map((x) => `${x.name}:${x.result}`).sort(),
     ['Acme:ads hidden', 'Globex:ads hidden', 'Hooli:ads hidden', 'Initech:ads hidden', 'Umbrella:ads hidden']);
 
   // Issue 2: the log as a file.
   const logFile = await saved(page, 'savelog');
   assert.match(logFile.file, /^fb-ad-disable-log-[\d-]+\.txt$/);
-  assert.match(logFile.text, /^fb-ad-disable 1\.2\.0 log\n/);
+  assert.match(logFile.text, /^fb-ad-disable 1\.2\.1 log\n/);
   assert.match(logFile.text, /Options: \{.*"saveLog":true/);
-  assert.match(logFile.text, /\d\d:\d\d:\d\d   5 advertisers found, 5 to process/);
+  assert.match(logFile.text, /\d\d:\d\d:\d\d   6 advertisers found, 6 to process/);
   assert.match(logFile.text, /\d\d:\d\d:\d\d Finished\.\n$/);
 
   // Issue 1: advertisers the page confirmed as disabled are remembered and skipped next time.
@@ -288,7 +304,7 @@ test('progress bars, advertiser details CSV, saved log and remembered advertiser
   await p.locator('#known', { hasText: '4 remembered' }).waitFor();
   await configureAndStart(page, { tasks: ['lists'], options: { saveInfo: true, saveLog: false } });
   r = await report(page);
-  assert.match(r.lists.text, /0 disabled, 1 needed no change, 0 failed \(of 5\), 4 skipped as remembered$/);
+  assert.match(r.lists.text, /0 disabled, 0 needed no change, 1 had no list controls, 1 failed \(of 6\), 4 skipped as remembered/);
   assert.equal(listuse(), 5, 'remembered advertisers are not opened again');
   assert.equal(await p.locator('#advertisers tbody tr', { hasText: 'skipped (remembered' }).count(), 4);
   assert.equal(await p.locator('button[name="savelog"]').count(), 0, 'no log buttons unless the option is on');
@@ -297,7 +313,7 @@ test('progress bars, advertiser details CSV, saved log and remembered advertiser
   await p.locator('button[name="menu"]').click();
   await configureAndStart(page, { tasks: ['lists'], options: { skipKnown: false, saveInfo: false } });
   r = await report(page);
-  assert.match(r.lists.text, /3 disabled, 2 needed no change, 0 failed \(of 5\)$/);
+  assert.match(r.lists.text, /3 disabled, 1 needed no change, 1 had no list controls, 1 failed \(of 6\)/);
   assert.equal(listuse(), 10);
   assert.equal(await p.locator('#advertisers').count(), 0, 'no table unless the option is on');
 
@@ -316,11 +332,52 @@ test('ad topics: "See all" next to the heading, then "See less" for each topic',
   await page.goto('https://accountscenter.facebook.com/ads/');
   await page.evaluate(() => window.__openMenu());
   await configureAndStart(page, { tasks: ['adsettings', 'topics'] }); // ad settings first, so the other tab is showing
-  const r = await report(page);
+  let r = await report(page);
   assert.equal(r.topics.status, 'changed');
   assert.deepEqual(events.filter((e) => e.type === 'topic').map((e) => `${e.name}:${e.value}`).sort(),
     ['Alcohol:See less', 'Parenting:See less', 'Pets:See less']);
+  // The ad rows under their current names; the "Ads shown outside of Meta" heading is not mistaken for a row.
+  assert.deepEqual(sets(events), { ad_partners: 'off', ad_outside: 'off', ad_about_meta: false, ad_social: 'Only me' });
   assert.deepEqual(events.filter((e) => e.type === 'decoy'), []);
+
+  // Second run: the rows now say so themselves, and nothing is opened or clicked for them.
+  const before = events.length;
+  await panel(page).locator('button[name="menu"]').click();
+  await configureAndStart(page, { tasks: ['adsettings'] });
+  r = await report(page);
+  assert.equal(r.ad_partners.status, 'already');
+  assert.match(r.ad_partners.text, /not using this information/);
+  assert.equal(r.ad_outside.status, 'already');
+  assert.equal(r.ad_about_meta.status, 'already');
+  assert.deepEqual(events.slice(before).filter((e) => ['ad_partners', 'ad_outside', 'ad_about_meta'].includes(e.id)), []);
+  await context.close();
+});
+
+test('a page reload in the middle of a run is picked up by the same tab only', async () => {
+  const context = await browser.newContext();
+  const events = await mockFacebook(context, { inject: true });
+  await fakeUserscriptApi(context);
+  const page = await context.newPage();
+  await page.goto('https://accountscenter.facebook.com/ads/audience_based_advertising/');
+  await page.evaluate(() => window.__openMenu());
+  await configureAndStart(page, { tasks: ['lists'] });
+  await panel(page).locator('#advlabel', { hasText: /^Advertisers: [12] of 6$/ }).waitFor();
+
+  // Another Facebook tab opened meanwhile must not join in.
+  const other = await context.newPage();
+  await other.goto('https://www.facebook.com/settings/');
+  await other.waitForTimeout(400);
+  assert.equal(await panel(other).count(), 0);
+  await other.close();
+
+  await page.reload(); // Facebook reloads the page under the script
+  const r = await report(page);
+  assert.equal(r.lists.status, 'changed');
+  assert.match(r.lists.text, /1 failed \(of 6\)/);
+  assert.match(await panel(page).locator('button[name="menu"]').textContent(), /menu/);
+  // Every advertiser was handled. (The one in progress at the reload is done again: the mock forgets its state on reload.)
+  assert.deepEqual([...new Set(events.filter((e) => e.type === 'listuse').map((e) => `${e.id}:${e.use}`))].sort(), ['1:0', '1:1', '3:0', '3:1', '4:1']);
+  assert.equal(events.filter((e) => e.type === 'decoy').length, 0);
   await context.close();
 });
 
@@ -346,7 +403,7 @@ test('Chrome extension: content script loads, toolbar flag opens the menu, a run
     args: [`--disable-extensions-except=${ROOT}`, `--load-extension=${ROOT}`],
   });
   try {
-    const events = await mockFacebook(context);
+    const events = await mockFacebook(context, { offMeta: true });
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
     await worker.evaluate(() => chrome.storage.local.set({ fbAdDisableOpen: Date.now() })); // what the toolbar click does
     const page = await context.newPage();

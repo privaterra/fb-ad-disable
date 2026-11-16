@@ -63,28 +63,35 @@ const pages = {
     m.main().append(m.el('h1', null, m.span('Settings: ' + tab)), ...(rows[tab] ? rows[tab]() : []));
   },
 
-  // ---- www.facebook.com/adpreferences/advertisers -----------------------
-  'www /adpreferences/advertisers': () => {
+  // ---- accountscenter: advertisers you saw ads from ------------------------
+  // www.facebook.com/adpreferences/advertisers redirects here (see `redirects` below).
+  'ac /ads/ad_topics': () => {
     const m = window.mock;
-    const item = (name) => {
+    m.main().append(m.el('h1', null, m.span('Ad preferences')),
+      m.el('div', { style: 'display:flex;justify-content:space-between' }, m.el('h2', null, m.span('Ad topics')),
+        m.el('div', { role: 'button', onclick: () => m.rec('decoy', { what: 'See all on the page behind the pop-up' }) }, m.span('See all'))));
+    const advertiser = (name) => m.el('div', { role: 'button', tabindex: '0', onclick: () => {
       const btn = m.button('Hide ads', () => {
         if (btn.textContent !== 'Hide ads') return;
         m.rec('hide', { name });
         btn.querySelector('span').textContent = 'Undo';
       });
-      return m.el('div', { role: 'listitem' }, m.span(name), btn);
-    };
-    const list = m.el('div', { role: 'list' }, ['Acme', 'Globex', 'Initech'].map(item));
-    const more = m.button('See more', () => { list.append(item('Umbrella'), item('Hooli')); more.remove(); });
-    m.main().append(m.el('h1', null, m.span('Advertisers you’ve seen')), list, more);
+      m.dialog(name, 'Back', m.el('p', null, 'You saw an ad from this advertiser.'), btn);
+    } }, m.span(name));
+    m.dialog('Advertisers you saw ads from', 'Close',
+      m.el('p', null, m.span('View and hide ads from advertisers you saw ads from.')),
+      m.el('div', { role: 'button', onclick: () => m.rec('decoy', { what: 'filter' }) }, m.span('All advertisers')),
+      m.el('div', { role: 'button', onclick: () => m.rec('decoy', { what: 'filter' }) }, m.span('All accounts')),
+      ['Acme', 'Globex', 'Initech', 'Umbrella', 'Hooli'].map(advertiser));
   },
 
   // ---- accountscenter: off-Meta activity --------------------------------
   'ac /info_and_permissions': () => {
     const m = window.mock;
+    // Meta has removed this setting for many accounts; the tests cover both cases.
     m.main().append(m.el('h1', null, m.span('Your information and permissions')),
       m.row('Download your information', '', () => {}),
-      m.row('Your activity off Meta technologies', '', () => m.dialog('Your activity off Meta technologies', 'Back', offMeta())));
+      window.__flags.offMeta ? m.row('Your activity off Meta technologies', '', () => m.dialog('Your activity off Meta technologies', 'Back', offMeta())) : null);
     const offMeta = () => m.el('div', null,
       m.row('Recent activity', '', () => {}),
       m.row('Clear previous activity', '', () => {
@@ -113,21 +120,58 @@ const pages = {
   // ---- accountscenter: ad preferences -----------------------------------
   'ac /ads': () => {
     const m = window.mock;
-    const manage = m.el('div', { hidden: '' },
-      m.row('Activity information from ad partners', '', () => {
-        m.dialog('Activity information from ad partners', 'Back', m.button('Review setting', () => {
-          let picked = 'Yes, make my ads more relevant by using this information';
+    // What a row says about its setting survives a reload, as on the real page.
+    const saved = (id, fallback) => sessionStorage.getItem('mock:' + id) || fallback;
+    const setting = (label, desc, id, fallback, onclick) => {
+      const value = m.span(id ? saved(id, fallback) : '');
+      const r = m.el('div', { class: 'row', style: 'padding:6px;border-bottom:1px solid #ccc', onclick },
+        m.el('div', null, m.span(label)), m.el('div', null, m.span(desc)), m.el('div', null, value));
+      r.set = (text) => { sessionStorage.setItem('mock:' + id, text); value.textContent = text; };
+      return r;
+    };
+    const partners = setting('Activity from other businesses', 'Choose whether we use this activity to show you relevant content.',
+      'ad_partners', 'Using this information', () => {
+        m.dialog('Activity from other businesses', 'Back', m.button('Review setting', () => {
+          let picked = 'Use this information';
           m.dialog('Do you want us to use this information?', 'Back',
-            m.radios([picked, 'No, don’t make my ads more relevant by using this information'], picked, (o) => { picked = o; }),
-            m.button('Confirm', () => { m.rec('set', { id: 'ad_partners', value: picked.slice(0, 2) }); m.closeAll(); }));
+            m.radios([picked, 'Don’t use this information'], picked, (o) => { picked = o; }),
+            m.button('Confirm', () => {
+              const off = picked.startsWith('Don');
+              m.rec('set', { id: 'ad_partners', value: off ? 'off' : 'on' });
+              partners.set(off ? 'Not using this information' : 'Using this information');
+              m.closeAll();
+            }));
         }));
-      }),
-      m.row('Categories used to reach you', '', () => {
+      });
+    const otherApps = setting('Ads in other apps', 'Choose whether you see ads from Meta Audience Network in other apps.',
+      'ad_outside', 'Showing you ads in other apps', () => {
+        // A floating panel that is not a dialog and whose choices have no roles.
+        const pop = m.el('div', { style: 'position:absolute;top:120px;left:60px;width:300px;border:1px solid #888;background:#fff;padding:8px' },
+          ['Show me ads in other apps', 'Don’t show me ads in other apps'].map((o) => m.el('div', { style: 'padding:6px', onclick: () => {
+            const off = o.startsWith('Don');
+            m.rec('set', { id: 'ad_outside', value: off ? 'off' : 'on' });
+            otherApps.set(off ? 'Not showing you ads in other apps' : 'Showing you ads in other apps');
+            pop.remove();
+          } }, m.span(o))));
+        document.body.append(pop);
+      });
+    const manage = m.el('div', { hidden: '' },
+      m.el('h3', null, m.span('Information used to show you ads')),
+      setting('Categories used to reach you', 'Information you share on your profile or other categories used to reach you.', null, '', () => {
         m.dialog('Categories used to reach you', 'Back', ['Employer', 'Job title', 'Education', 'Relationship status'].map((c, i) =>
           m.el('div', null, m.span(c), m.switchEl(c, i % 2 === 0, (v) => m.rec('category', { name: c, value: v })))));
       }),
-      m.popupRow('ad_outside', 'Ads shown outside of Meta', 'Allowed', ['Allowed', 'Not allowed']),
-      m.row('Social interactions', '', () => {
+      partners,
+      setting('Audience-based advertising', 'Advertisers using your activity or information', null, '', () => {}),
+      // A heading, not a row: clicking it does nothing useful.
+      m.el('h3', { onclick: () => m.rec('decoy', { what: 'section heading' }) }, m.span('Ads shown outside of Meta')),
+      otherApps,
+      setting('Ads about Meta', 'Choose whether we use your activity to show you ads about Meta on other platforms.', null, '', () => {
+        m.dialog('Ads about Meta', 'Back', m.switchEl('Use your activity for ads about Meta', sessionStorage.getItem('mock:ad_about_meta') !== 'off',
+          (v) => { sessionStorage.setItem('mock:ad_about_meta', v ? 'on' : 'off'); m.rec('set', { id: 'ad_about_meta', value: v }); }));
+      }),
+      m.el('h3', null, m.span('Other settings')),
+      setting('Social interactions', 'Choose who can see your social interactions alongside ads.', null, '', () => {
         m.dialog('Social interactions', 'Back', m.radios(['Friends', 'Only me'], 'Friends', (o) => m.rec('set', { id: 'ad_social', value: o })));
       }));
     const topic = (name) => m.el('div', { role: 'button', onclick: () => {
@@ -149,56 +193,82 @@ const pages = {
   },
 
   // ---- accountscenter: advertisers that uploaded a list ------------------
+  // Each advertiser opens as a page with its own address. Going back one step too far,
+  // or forward again, lands on Facebook's error page, as on the real site.
   'ac /ads/audience_based_advertising': () => {
     const m = window.mock;
-    // which uses are still allowed per advertiser: [show ads, exclude from ads]
+    const LIST = '/ads/audience_based_advertising/';
+    // allow: which uses are still allowed [show ads, exclude from ads]; null = no list controls.
     const advertisers = [
       { id: 1, name: 'Data Broker One', allow: [true, true] },
       { id: 2, name: 'Already Done Inc', allow: [false, false] },
       { id: 3, name: 'Shop Three', allow: [true, true] },
       { id: 4, name: 'Half Done LLC', allow: [false, true] },
       { id: 5, name: 'No List Corp', allow: null },
+      { id: 6, name: 'Broken Page Ltd', broken: true },
     ];
-    const list = m.el('div', { role: 'list' });
-    const more = m.button('See more', () => render(true));
+    const view = m.el('div');
+    m.main().append(view);
+    let expanded = false;
 
-    function open(a) {
-      const first = m.dialog(a.name, 'Back', m.el('p', null, 'You may have interacted with their website, app or store.'));
-      // Going back to the list collapses it again, as the real page does.
-      first.querySelector('[aria-label="Back"]').addEventListener('click', () => render(false));
-      if (!a.allow) return;
-      first.append(m.row('They uploaded or used a list to reach you.', '', () => {
-        m.dialog('List usage', 'Back', ['Showing ads to you using a list', 'Excluding you from ads using a list'].map((label, i) => {
-          const btn = m.button(a.allow[i] ? 'Don’t allow' : 'Allow', () => {
-            a.allow[i] = !a.allow[i];
-            m.rec('listuse', { id: a.id, use: i, allow: a.allow[i] });
-            btn.querySelector('span').textContent = a.allow[i] ? 'Don’t allow' : 'Allow';
-          });
-          return m.el('div', null, m.span(label), btn);
-        }));
-      }));
+    function list() {
+      view.replaceChildren(...[
+        m.el('div', { role: 'button', 'aria-label': 'Back', onclick: () => m.rec('decoy', { what: 'left the advertiser list' }) }, '←'),
+        m.el('h1', null, m.span('Audience-based advertising')),
+        m.el('a', { href: LIST }, m.span('Audience-based advertising')),
+        m.el('div', { role: 'list' }, advertisers.slice(0, expanded ? 6 : 3).map((a) =>
+          m.el('div', { role: 'listitem' }, m.el('a', { role: 'link', 'data-adv': a.id,
+            href: `${LIST}${1000000 + a.id}/?should_show_back_button=true` }, m.span(a.name))))),
+        expanded ? null : m.button('See more', () => { expanded = true; list(); }),
+      ].filter(Boolean));
     }
 
-    function render(expanded) {
-      list.replaceChildren(...advertisers.slice(0, expanded ? 5 : 3).map((a) =>
-        m.el('div', { role: 'listitem' }, m.el('a', { role: 'link', 'data-adv': a.id,
-          href: '/ads/audience_based_advertising/?advertiser_id=' + a.id }, m.span(a.name)))));
-      if (expanded) more.remove(); else m.main().append(more);
+    function broken() {
+      view.replaceChildren(m.el('h1', null, m.span('This page isn’t available right now')),
+        m.el('p', null, m.span('This may be because of a technical error that we’re working to get fixed.')),
+        m.button('Reload page', () => {}));
     }
-    // Like React, the page handles clicks with one delegated listener. The link opens a
-    // side panel; if nobody prevented the default action the browser would also navigate.
+
+    function detail(a) {
+      if (a.broken) return broken();
+      view.replaceChildren(...[
+        m.el('div', { role: 'button', 'aria-label': 'Back', onclick: () => history.back() }, '←'),
+        m.el('h1', null, m.span(a.name)),
+        m.el('p', null, 'You may have interacted with their website, app or store.'),
+        a.allow && m.row('They uploaded or used a list to reach you.', '', () => {
+          m.dialog('List usage', 'Back', ['Showing ads to you using a list', 'Excluding you from ads using a list'].map((label, i) => {
+            const btn = m.button(a.allow[i] ? 'Don’t allow' : 'Allow', () => {
+              a.allow[i] = !a.allow[i];
+              m.rec('listuse', { id: a.id, use: i, allow: a.allow[i] });
+              btn.querySelector('span').textContent = a.allow[i] ? 'Don’t allow' : 'Allow';
+            });
+            return m.el('div', null, m.span(label), btn);
+          }));
+        }),
+      ].filter(Boolean));
+    }
+
+    // Like React, one delegated listener. If nobody prevented the default action the browser would navigate.
     document.addEventListener('click', (e) => {
       const link = e.target.closest('a[data-adv]');
       if (!link) return;
       const a = advertisers.find((x) => String(x.id) === link.dataset.adv);
       if (!e.defaultPrevented) m.rec('navigated', { id: a.id });
       e.preventDefault();
-      open(a);
+      history.pushState({}, '', link.getAttribute('href'));
+      detail(a);
     });
-    m.main().append(m.el('h1', null, m.span('Audience-based advertising')),
-      m.el('a', { href: '/ads/audience_based_advertising/' }, m.span('Audience-based advertising')), list);
-    render(false);
+    window.addEventListener('popstate', () => {
+      m.closeAll();
+      if (location.pathname === LIST) { expanded = false; list(); } else broken();
+    });
+    list();
   },
 };
 
-module.exports = { pages };
+// Addresses Facebook answers with a redirect.
+const redirects = {
+  'www /adpreferences/advertisers': 'https://accountscenter.facebook.com/ads/ad_topics',
+};
+
+module.exports = { pages, redirects };
