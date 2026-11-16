@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FB Ad Disable & Privacy Hardener
 // @namespace    https://github.com/privaterra/fb-ad-disable
-// @version      1.2.1
+// @version      1.2.2
 // @description  Opt out of advertiser lists, restrict ad data use and tighten Facebook privacy settings from one menu.
 // @license      MIT
 // @match        https://www.facebook.com/*
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.2.1';
+  const VERSION = '1.2.2';
   const TAG = '[fb-ad-disable]';
   const KEY = 'fbAdDisableState';
   const MEMORY_KEY = 'fbAdDisableAdvertisers';
@@ -250,6 +250,7 @@
   class DryRun extends Error {}
   class Renav extends Error { constructor(message, progress = 0) { super(message); this.progress = progress; } }
   class RowMissing extends Error {}
+  class Broken extends Error {}
 
   // ---------------------------------------------------------------------------
   // DOM helpers
@@ -370,6 +371,31 @@
   function click(el) {
     try { el.scrollIntoView({ block: 'center' }); } catch (e) { /* ignore */ }
     el.click();
+  }
+
+  // The whole sequence a mouse produces. Some of Facebook's controls only react to this.
+  function press(el) {
+    try { el.scrollIntoView({ block: 'center' }); } catch (e) { /* ignore */ }
+    const r = el.getBoundingClientRect();
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    const inner = document.elementFromPoint(x, y);
+    const target = inner && el.contains(inner) ? inner : el;
+    const fire = (Type, name, extra) => {
+      const init = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 0, ...extra };
+      let ev;
+      try { ev = new Type(name, { ...init, view: window }); } catch (e) { ev = new Type(name, init); } // a userscript's window is not a Window
+      target.dispatchEvent(ev);
+    };
+    const Pointer = window.PointerEvent || MouseEvent;
+    const pointer = { pointerType: 'mouse', isPrimary: true, pointerId: 1 };
+    fire(Pointer, 'pointerover', pointer);
+    fire(MouseEvent, 'mouseover');
+    fire(Pointer, 'pointerdown', { ...pointer, buttons: 1 });
+    fire(MouseEvent, 'mousedown', { buttons: 1 });
+    try { el.focus({ preventScroll: true }); } catch (e) { /* ignore */ }
+    fire(Pointer, 'pointerup', pointer);
+    fire(MouseEvent, 'mouseup');
+    fire(MouseEvent, 'click');
   }
 
   // A click that changes a setting. In dry-run mode nothing is clicked.
@@ -560,11 +586,22 @@
     await new Promise(() => {}); // the page unloads
   }
 
+  // Loads another page in the middle of a step; the step picks up there when the page has loaded.
+  async function travel(unitId, href) {
+    state.navFor = unitId;
+    state.navKeep = true;
+    state.navAt = Date.now();
+    await save();
+    location.assign(href);
+    await new Promise(() => {}); // the page unloads
+  }
+
   async function goto(unit) {
     if (!unit.url) return;
     if (state.navFor === unit.id) { // just arrived for this unit; accept wherever Facebook sent us
       state.navFor = null;
-      if (!at(unit.url)) state.alias[unit.url] = location.origin + location.pathname + location.search;
+      if (!state.navKeep && !at(unit.url)) state.alias[unit.url] = location.origin + location.pathname + location.search;
+      state.navKeep = false;
       await settle();
       return;
     }
@@ -758,7 +795,16 @@
   // Advertisers that uploaded a list with your details. For each one: open it, open
   // "They uploaded or used a list to reach you", click "Don't allow" for both uses
   // (showing ads and excluding you), go back to the list.
+  //
+  // Facebook answers an advertiser with its error page unless the page is reached the way it
+  // expects, and which way that is has changed over time. So the list is reached through the
+  // Ad preferences screens as a person would, and an advertiser is opened in up to three ways,
+  // moving on when the first advertisers all come up as the error page:
+  //   click  - a plain click on the entry
+  //   press  - the full mouse sequence on the entry
+  //   direct - load each advertiser's own address (needs the extension or userscript)
   async function runLists() {
+    const UNIT = 'lists';
     const base = '/ads/audience_based_advertising';
     const keyOf = (a) => { const u = new URL(a.href, location.origin); return u.pathname + u.search; };
     const anchors = () => [...document.querySelectorAll('a[href*="/ads/audience_based_advertising/"]')]
@@ -766,22 +812,153 @@
     const o = state.opts;
     const done = new Set(state.listsDone || []);
     const tally = state.listsTally || (state.listsTally = { changed: 0, none: 0, failed: 0, dry: 0, skipped: 0, bare: 0 });
-    tally.bare = tally.bare || 0;
-    const listUrl = this.url;
-    // Back to the list after an advertiser. Facebook opens an advertiser either as a page of its
-    // own (the address changes) or as a panel over the list. For a page: go back only until the
-    // list's address is showing again, never further. For a panel: one Back per level opened.
-    const backToList = async (depth, moved) => {
-      if (!moved) { await goBack(depth); return; }
-      for (let i = 0; i < depth + 2 && !at(listUrl); i++) {
-        const backs = findLabel(t('back'));
-        if (backs.length) click(backs[backs.length - 1]); else history.back();
+    const prog = state.adv.lists || (state.adv.lists = { done: 0, total: 0, skipped: 0 });
+    const ls = state.lists || (state.lists = { way: 'click', ok: 0, bad: 0, at: null, all: [], since: 0 });
+    const known = o.remember || o.skipKnown ? await memory.load() : {};
+    const broken = () => findText(t('unavailable'), { mode: 'includes' }).length > 0;
+    const NOT_SHOWN = 'Facebook showed “This page isn’t available right now”';
+
+    const sync = () => {
+      prog.total = Math.max(prog.total, new Set([...done, ...ls.all.map((x) => x.key), ...anchors().map(keyOf)]).size);
+      prog.done = done.size;
+      prog.skipped = tally.skipped;
+      ui.advertisers(prog);
+      eta();
+    };
+
+    // On an open advertiser: read it and click "Don't allow" for both uses.
+    // nav.depth counts the levels opened, for the way back.
+    const handle = async (name, rec, nav) => {
+      const uploadedRow = () => findText(t('theyUploaded'), { mode: 'includes' })[0];
+      const buttons = () => findText([...t('dontAllow'), ...t('allow')])[0];
+      const first = await waitFor(() => uploadedRow() || (broken() && 'broken') || buttons(), 8000).catch(() => null);
+      if (first === 'broken') throw new Broken(NOT_SHOWN);
+      if (o.saveInfo) { // the advertiser's panel, or its page when it opened as one
+        const box = topLayer() || document.querySelector('[role="main"]') || document.body;
+        rec.detail_text = clip(box.innerText, 1000);
+        rec.facebook_page = [...box.querySelectorAll('a[href]')].map((a) => a.href)
+          .find((x) => !x.includes(base) && !/accountscenter\.facebook\.com/.test(x)) || '';
+      }
+      const uploaded = uploadedRow();
+      if (uploaded) { click(uploaded); nav.depth++; await settle(); }
+      if (o.saveInfo) rec.list_uses = listUses();
+
+      let clicks = 0, prev = -1;
+      for (let pass = 0; pass < 2; pass++) {
+        const btns = findText(t('dontAllow'));
+        if (!btns.length) break;
+        // Normally a clicked button turns into "Allow". If the label stays, take the other one.
+        const target = btns.length === prev && btns.length > 1 ? btns[btns.length - 2] : btns[btns.length - 1];
+        prev = btns.length;
+        act(target, `Don’t allow: ${name}`);
+        clicks++;
         await settle();
       }
+      // Only what the page itself confirms counts: an "Allow" button and no "Don't allow" left.
+      return { clicks, confirmed: !findText(t('dontAllow')).length && findText(t('allow')).length > 0 };
     };
-    const broken = () => findText(t('unavailable'), { mode: 'includes' }).length > 0;
-    const prog = state.adv.lists || (state.adv.lists = { done: 0, total: 0, skipped: 0 });
-    const known = o.remember || o.skipKnown ? await memory.load() : {};
+
+    // Books one advertiser: counts, the details table, the remembered list, the progress bar.
+    const conclude = async (key, name, rec, out, started) => {
+      rec.action = 'none';
+      if (out.error instanceof DryRun) {
+        ls.ok++;
+        tally.dry++;
+        rec.result = 'would be disabled (dry run)';
+        log(`  would disable: ${name}`);
+      } else if (out.error) {
+        tally.failed++;
+        rec.result = 'failed';
+        rec.error = out.error.message;
+        state.listsSeen = state.listsSeen || snapshot();
+        log(`  ${name}: ${out.error.message}`);
+      } else {
+        ls.ok++;
+        if (out.clicks) {
+          tally.changed++;
+          rec.result = 'disabled';
+          rec.action = `clicked “Don’t allow” ${out.clicks}×`;
+        } else if (out.confirmed) {
+          tally.none++;
+          rec.result = 'no change needed';
+          log(`  ${name}: nothing to change`);
+        } else { // neither "Don't allow" nor "Allow": nothing on this page was recognised
+          tally.bare++;
+          rec.result = 'no list controls found';
+          state.listsSeen = state.listsSeen || snapshot();
+          log(`  ${name}: no list controls found`);
+        }
+      }
+      done.add(key);
+      state.listsDone = [...done];
+      record(rec);
+      if (o.remember && out.confirmed && !o.dryRun) { // a dry run leaves no trace
+        known[key] = { name, result: rec.result, at: Date.now() };
+        await memory.save(known);
+      }
+      tick(UNIT, started);
+      await save();
+      sync();
+    };
+
+    const finish = () => {
+      if (!done.size) throw new Error('no list-based advertisers were found');
+      const skipped = tally.skipped ? `, ${tally.skipped} skipped as remembered` : '';
+      const bare = tally.bare ? `, ${tally.bare} had no list controls` : '';
+      const detail = o.dryRun
+        ? `${tally.dry} of ${done.size} advertisers would be disabled${bare}${tally.failed ? `, ${tally.failed} failed` : ''}${skipped}`
+        : `${tally.changed} disabled, ${tally.none} needed no change${bare}, ${tally.failed} failed (of ${done.size})${skipped}`;
+      // Nothing recognised on any advertiser page means the labels are wrong, not that all is well.
+      const lost = tally.failed + tally.bare > 0 && tally.changed + tally.none + tally.dry === 0;
+      const status = lost ? 'manual' : o.dryRun ? 'dry' : tally.changed ? 'changed' : 'already';
+      return { status, detail, seen: tally.failed + tally.bare ? state.listsSeen : '' };
+    };
+
+    // ---- direct: every advertiser's page is loaded by its address -----------------------------
+    const direct = async () => {
+      if (MODE === 'console') {
+        throw new Error('Facebook only opens these advertisers when each page is loaded on its own. A pasted script cannot survive those page loads: use the extension or the userscript for this task');
+      }
+      const here = () => location.pathname.replace(/\/+$/, '');
+      for (;;) {
+        check();
+        const cur = ls.at;
+        if (cur) {
+          if (here() !== new URL(cur.href).pathname.replace(/\/+$/, '')) await travel(UNIT, cur.href); // a reload took us elsewhere
+          const rec = { task: 'list-based', name: cur.name, advertiser_id: advertiserId(cur.href), link: cur.href, list_text: cur.name };
+          let out;
+          try { out = await handle(cur.name, rec, { depth: 0 }); } catch (e) { if (e instanceof Abort) throw e; out = { error: e }; }
+          ls.at = null;
+          if (out.error instanceof Broken && !ls.ok && ++ls.bad >= 4) {
+            throw new Error('Facebook shows “This page isn’t available right now” for every advertiser, however it is opened. Open one by hand from Ad preferences → Manage info → Audience-based advertising to see whether Facebook shows it to you at all');
+          }
+          await conclude(cur.key, cur.name, rec, out, ls.since || Date.now());
+        }
+        const next = ls.all.find((x) => !done.has(x.key));
+        if (!next) break;
+        ls.at = next;
+        ls.since = Date.now();
+        await travel(UNIT, next.href);
+      }
+      return finish();
+    };
+    if (ls.way === 'direct') return direct();
+
+    // ---- reach the list ----------------------------------------------------------------------
+    let found = await waitFor(() => anchors().length, 6000).catch(() => null);
+    if (!found && !/audience_based_advertising/.test(location.pathname)) {
+      // The way a person gets there: Ad preferences → Manage info → Audience-based advertising.
+      const tab = findText(AD_TAB)[0];
+      if (tab) { click(tab); await settle(); }
+      const row = await waitFor(() => findRow(['audience-based advertising']), 8000, 'row', 300).catch(() => null);
+      if (row) {
+        await openRow(row);
+        found = await waitFor(() => anchors().length, 10000).catch(() => null);
+      }
+    }
+    if (!found) throw new RowMissing('could not find the list of advertisers');
+    const home = new URL(location.href);
+    const atHome = () => sameUrl(new URL(location.href), home);
     const expand = async () => {
       const more = findText(t('seeMore'));
       if (!more.length) return false;
@@ -789,16 +966,18 @@
       await settle();
       return true;
     };
-    const sync = () => {
-      const keys = new Set([...done, ...anchors().map(keyOf)]);
-      prog.total = Math.max(prog.total, keys.size);
-      prog.done = done.size;
-      prog.skipped = tally.skipped;
-      ui.advertisers(prog);
-      eta();
+    // Back to the list after an advertiser. Facebook opens an advertiser either as a page of its
+    // own (the address changes) or as a panel over the list. For a page: go back only until the
+    // list's address is showing again, never further. For a panel: one Back per level opened.
+    const backToList = async (depth, moved) => {
+      if (!moved) { await goBack(depth); return; }
+      for (let i = 0; i < depth + 2 && !atHome(); i++) {
+        const backs = findLabel(t('back'));
+        if (backs.length) click(backs[backs.length - 1]); else history.back();
+        await settle();
+      }
     };
 
-    await waitFor(() => anchors().length, 10000).catch(() => null);
     // Count first: open the whole list so the advertiser bar knows its total.
     ui.progress('Counting advertisers…');
     for (let i = 0, stale = 0, n = anchors().length; i < 80 && stale < 2; i++) {
@@ -807,14 +986,20 @@
       stale = now > n ? 0 : stale + 1;
       n = now;
     }
+    const seenKeys = new Set(ls.all.map((x) => x.key));
+    for (const a of anchors()) {
+      const key = keyOf(a);
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      ls.all.push({ key, href: a.href, name: say(a.closest('[role="listitem"]') || a) || key });
+    }
     if (o.skipKnown) {
       let skipped = 0;
-      for (const a of anchors()) {
-        const key = keyOf(a);
-        if (done.has(key) || !known[key]) continue;
-        done.add(key);
+      for (const x of ls.all) {
+        if (done.has(x.key) || !known[x.key]) continue;
+        done.add(x.key);
         skipped++;
-        record({ task: 'list-based', name: known[key].name || say(a), advertiser_id: advertiserId(a.href), link: a.href,
+        record({ task: 'list-based', name: known[x.key].name || x.name, advertiser_id: advertiserId(x.href), link: x.href,
           result: 'skipped (remembered from an earlier run)', action: 'none' });
       }
       tally.skipped += skipped;
@@ -825,13 +1010,14 @@
     log(`  ${prog.total} advertisers found, ${prog.total - prog.done} to process`);
     ui.progress('');
 
+    // ---- one advertiser at a time, opened from the list -----------------------------------------
     for (;;) {
       check();
       await expand(); // the list can collapse again after coming back
 
       const next = anchors().find((a) => !done.has(keyOf(a)));
       if (!next) {
-        if (done.size && !anchors().length && (!at(listUrl) || broken())) throw new Renav('the advertiser list is no longer open', done.size);
+        if (done.size && !anchors().length && (!atHome() || broken())) throw new Renav('the advertiser list is no longer open', done.size);
         break;
       }
       const started = Date.now();
@@ -840,94 +1026,38 @@
       const name = say(item || next) || key;
       const rec = { task: 'list-based', name, advertiser_id: advertiserId(next.href), link: next.href,
         list_text: clip((item || next).textContent, 300) };
-      let depth = 0, confirmed = false, moved = false;
+      const nav = { depth: 0 };
+      let moved = false, out;
       try {
         const opener = (item && item.querySelector('a[role="link"]')) || next;
         opener.addEventListener('click', (e) => e.preventDefault(), { once: true }); // let the page open it, not the browser
-        click(opener);
-        depth++;
+        if (ls.way === 'press') press(opener); else click(opener);
+        nav.depth++;
         await settle();
-        moved = !at(listUrl);
-        // Facebook's own error page. Its "Reload page" button is left alone: a reload would cut the run short.
-        if (broken()) throw new Error('Facebook showed “This page isn’t available right now”');
-        const uploaded = await waitFor(() => findText(t('theyUploaded'), { mode: 'includes' })[0], 8000).catch(() => null);
-        if (o.saveInfo) { // the advertiser's panel, or its page when it opened as one
-          const box = topLayer() || (moved ? document.querySelector('[role="main"]') || document.body : null);
-          rec.detail_text = box ? clip(box.innerText, 1000) : '';
-          rec.facebook_page = (box ? [...box.querySelectorAll('a[href]')].map((a) => a.href) : [])
-            .find((x) => !x.includes(base) && !/accountscenter\.facebook\.com/.test(x)) || '';
-        }
-        if (uploaded) { click(uploaded); depth++; await settle(); }
-        if (o.saveInfo) rec.list_uses = listUses();
-
-        let clicks = 0, prev = -1;
-        for (let pass = 0; pass < 2; pass++) {
-          const btns = findText(t('dontAllow'));
-          if (!btns.length) break;
-          // Normally a clicked button turns into "Allow". If the label stays, take the other one.
-          const target = btns.length === prev && btns.length > 1 ? btns[btns.length - 2] : btns[btns.length - 1];
-          prev = btns.length;
-          act(target, `Don’t allow: ${name}`);
-          clicks++;
-          await settle();
-        }
-        // Only what the page itself confirms is remembered: an "Allow" button and no "Don't allow" left.
-        confirmed = !findText(t('dontAllow')).length && findText(t('allow')).length > 0;
-        if (clicks) {
-          tally.changed++;
-          rec.result = 'disabled';
-          rec.action = `clicked “Don’t allow” ${clicks}×`;
-        } else if (confirmed) {
-          tally.none++;
-          rec.result = 'no change needed';
-          rec.action = 'none';
-          log(`  ${name}: nothing to change`);
-        } else { // neither "Don't allow" nor "Allow": nothing on this page was recognised
-          tally.bare++;
-          rec.result = 'no list controls found';
-          rec.action = 'none';
-          state.listsSeen = state.listsSeen || snapshot();
-          log(`  ${name}: no list controls found`);
-        }
+        moved = !atHome();
+        out = await handle(name, rec, nav);
       } catch (e) {
         if (e instanceof Abort) throw e;
-        rec.action = 'none';
-        if (e instanceof DryRun) {
-          tally.dry++;
-          rec.result = 'would be disabled (dry run)';
-          log(`  would disable: ${name}`);
-        } else {
-          tally.failed++;
-          rec.result = 'failed';
-          rec.error = e.message;
-          state.listsSeen = state.listsSeen || snapshot();
-          log(`  ${name}: ${e.message}`);
-        }
+        out = { error: e };
       }
-      await backToList(depth, moved);
-      done.add(key);
-      state.listsDone = [...done];
-      record(rec);
-      if (o.remember && confirmed && !o.dryRun) { // a dry run leaves no trace
-        known[key] = { name, result: rec.result, at: Date.now() };
-        await memory.save(known);
-      }
-      tick('lists', started);
-      await save();
-      sync();
-      if (done.size >= 1000) break;
-    }
+      await backToList(nav.depth, moved);
 
-    if (!done.size) throw new Error('no list-based advertisers were found on this page');
-    const skipped = tally.skipped ? `, ${tally.skipped} skipped as remembered` : '';
-    const bare = tally.bare ? `, ${tally.bare} had no list controls` : '';
-    const detail = o.dryRun
-      ? `${tally.dry} of ${done.size} advertisers would be disabled${bare}${tally.failed ? `, ${tally.failed} failed` : ''}${skipped}`
-      : `${tally.changed} disabled, ${tally.none} needed no change${bare}, ${tally.failed} failed (of ${done.size})${skipped}`;
-    // Nothing recognised on any advertiser page means the labels are wrong, not that all is well.
-    const lost = tally.failed + tally.bare > 0 && tally.changed + tally.none + tally.dry === 0;
-    const status = lost ? 'manual' : o.dryRun ? 'dry' : tally.changed ? 'changed' : 'already';
-    return { status, detail, seen: tally.failed + tally.bare ? state.listsSeen : '' };
+      if (out.error instanceof Broken && !ls.ok) {
+        // The error page before any advertiser has opened properly: the way of opening is at fault,
+        // not this advertiser. It is not booked; it is tried again the next way.
+        if (++ls.bad >= 2) {
+          ls.bad = 0;
+          ls.way = ls.way === 'click' ? 'press' : 'direct';
+          log(`  ${NOT_SHOWN} for the first advertisers; opening them another way (${ls.way})`);
+          if (ls.way === 'direct') { await save(); return direct(); }
+        }
+        await save();
+        continue;
+      }
+      await conclude(key, name, rec, out, started);
+      if (done.size >= 2000) break;
+    }
+    return finish();
   }
 
   // Walks a list one entry at a time: open it, run `action`, come back.
@@ -1172,8 +1302,9 @@
       run: () => (s.custom ? CUSTOM[s.custom]() : applySetting(s, value)),
     });
     const offMeta = [AC + '/info_and_permissions/', WWW + '/off_facebook_activity/'];
-    if (on('lists')) units.push({ id: 'lists', advertisers: true, title: 'Disable list-based advertisers', url: ADS + 'audience_based_advertising/',
-      manual: 'Open each advertiser → “They uploaded or used a list to reach you” → choose “Don’t allow” for both options.', run: runLists });
+    if (on('lists')) units.push({ id: 'lists', advertisers: true, title: 'Disable list-based advertisers',
+      ...where('lists', [ADS, ADS + 'audience_based_advertising/']),
+      manual: 'Ad preferences → Manage info → Audience-based advertising. Open each advertiser → “They uploaded or used a list to reach you” → choose “Don’t allow” for both options.', run: runLists });
     if (on('seen')) units.push({ id: 'seen', advertisers: true, title: 'Hide advertisers you have seen', url: WWW + '/adpreferences/advertisers',
       manual: 'Click “Hide ads” next to each advertiser.', run: runSeen });
     if (on('adsettings')) for (const s of AD_SETTINGS) units.push(setting(s, s.all));
@@ -1267,6 +1398,12 @@
       log('Finished.');
     } catch (e) {
       if (!(e instanceof Abort)) { log('Stopped by an unexpected error: ' + e.message); console.error(TAG, e); } else log('Stopped.');
+      const unit = units[state.idx];
+      if (unit) { // the report says where the run was cut short, with the advertiser counts so far
+        const sofar = unit.advertisers && state.adv[unit.id] ? ` (${state.adv[unit.id].done} of ${state.adv[unit.id].total} advertisers looked at)` : '';
+        state.results.push({ id: unit.id, title: unit.title, url: unit.url, manual: unit.manual, status: 'manual',
+          detail: `stopped before this step finished${sofar}`, seen: unit.id === 'lists' ? state.listsSeen || '' : '' });
+      }
     }
     state.running = false;
     state.navFor = null;

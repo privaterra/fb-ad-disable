@@ -162,7 +162,13 @@ const pages = {
           m.el('div', null, m.span(c), m.switchEl(c, i % 2 === 0, (v) => m.rec('category', { name: c, value: v })))));
       }),
       partners,
-      setting('Audience-based advertising', 'Advertisers using your activity or information', null, '', () => {}),
+      setting('Audience-based advertising', 'Advertisers using your activity or information', null, '', () => {
+        // Reached the way a person does: the list opens in a dialog and the address changes.
+        history.pushState({}, '', '/ads/audience_based_advertising/');
+        const view = m.el('div');
+        m.dialog('Audience-based advertising', 'Close', view);
+        m.advertiserList(view, true);
+      }),
       // A heading, not a row: clicking it does nothing useful.
       m.el('h3', { onclick: () => m.rec('decoy', { what: 'section heading' }) }, m.span('Ads shown outside of Meta')),
       otherApps,
@@ -192,77 +198,12 @@ const pages = {
       customize, manage);
   },
 
-  // ---- accountscenter: advertisers that uploaded a list ------------------
-  // Each advertiser opens as a page with its own address. Going back one step too far,
-  // or forward again, lands on Facebook's error page, as on the real site.
+  // ---- accountscenter: advertisers that uploaded a list (see lib.js) -----
   'ac /ads/audience_based_advertising': () => {
-    const m = window.mock;
-    const LIST = '/ads/audience_based_advertising/';
-    // allow: which uses are still allowed [show ads, exclude from ads]; null = no list controls.
-    const advertisers = [
-      { id: 1, name: 'Data Broker One', allow: [true, true] },
-      { id: 2, name: 'Already Done Inc', allow: [false, false] },
-      { id: 3, name: 'Shop Three', allow: [true, true] },
-      { id: 4, name: 'Half Done LLC', allow: [false, true] },
-      { id: 5, name: 'No List Corp', allow: null },
-      { id: 6, name: 'Broken Page Ltd', broken: true },
-    ];
-    const view = m.el('div');
-    m.main().append(view);
-    let expanded = false;
-
-    function list() {
-      view.replaceChildren(...[
-        m.el('div', { role: 'button', 'aria-label': 'Back', onclick: () => m.rec('decoy', { what: 'left the advertiser list' }) }, '←'),
-        m.el('h1', null, m.span('Audience-based advertising')),
-        m.el('a', { href: LIST }, m.span('Audience-based advertising')),
-        m.el('div', { role: 'list' }, advertisers.slice(0, expanded ? 6 : 3).map((a) =>
-          m.el('div', { role: 'listitem' }, m.el('a', { role: 'link', 'data-adv': a.id,
-            href: `${LIST}${1000000 + a.id}/?should_show_back_button=true` }, m.span(a.name))))),
-        expanded ? null : m.button('See more', () => { expanded = true; list(); }),
-      ].filter(Boolean));
-    }
-
-    function broken() {
-      view.replaceChildren(m.el('h1', null, m.span('This page isn’t available right now')),
-        m.el('p', null, m.span('This may be because of a technical error that we’re working to get fixed.')),
-        m.button('Reload page', () => {}));
-    }
-
-    function detail(a) {
-      if (a.broken) return broken();
-      view.replaceChildren(...[
-        m.el('div', { role: 'button', 'aria-label': 'Back', onclick: () => history.back() }, '←'),
-        m.el('h1', null, m.span(a.name)),
-        m.el('p', null, 'You may have interacted with their website, app or store.'),
-        a.allow && m.row('They uploaded or used a list to reach you.', '', () => {
-          m.dialog('List usage', 'Back', ['Showing ads to you using a list', 'Excluding you from ads using a list'].map((label, i) => {
-            const btn = m.button(a.allow[i] ? 'Don’t allow' : 'Allow', () => {
-              a.allow[i] = !a.allow[i];
-              m.rec('listuse', { id: a.id, use: i, allow: a.allow[i] });
-              btn.querySelector('span').textContent = a.allow[i] ? 'Don’t allow' : 'Allow';
-            });
-            return m.el('div', null, m.span(label), btn);
-          }));
-        }),
-      ].filter(Boolean));
-    }
-
-    // Like React, one delegated listener. If nobody prevented the default action the browser would navigate.
-    document.addEventListener('click', (e) => {
-      const link = e.target.closest('a[data-adv]');
-      if (!link) return;
-      const a = advertisers.find((x) => String(x.id) === link.dataset.adv);
-      if (!e.defaultPrevented) m.rec('navigated', { id: a.id });
-      e.preventDefault();
-      history.pushState({}, '', link.getAttribute('href'));
-      detail(a);
-    });
-    window.addEventListener('popstate', () => {
-      m.closeAll();
-      if (location.pathname === LIST) { expanded = false; list(); } else broken();
-    });
-    list();
+    window.mock.advertiserList(window.mock.main(), false); // loaded by its address
+  },
+  'ac /ads/audience_based_advertising/:id': () => {
+    window.mock.advertiserPage(window.mock.main());
   },
 };
 

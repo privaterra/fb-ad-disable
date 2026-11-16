@@ -36,7 +36,8 @@
     offscreen.before(d);
     return d;
   }
-  const closeAll = () => document.querySelectorAll('[role="dialog"],[role="menu"]').forEach((d) => { if (d !== offscreen) d.remove(); });
+  // closeAll.keep: a dialog that stays (the one holding the advertiser list).
+  const closeAll = () => document.querySelectorAll('[role="dialog"],[role="menu"]').forEach((d) => { if (d !== offscreen && d !== closeAll.keep) d.remove(); });
 
   function radios(options, current, onpick) {
     return el('div', { role: 'radiogroup' }, options.map((o) => {
@@ -157,5 +158,92 @@
     });
   }
 
-  window.mock = { deep, viewRow, deepSwitchRows, checkboxDialogRow, popupRow, el, span, rec, main, button, dialog, closeAll, radios, switchEl, row, audienceRow, menuRow, inlineSwitchRow, dialogSwitchRow, onOffRow };
+  // ---- advertisers that uploaded a list ------------------------------------
+  // Each advertiser is a page with its own address. Whether that page opens, or Facebook's
+  // error page comes up instead, depends on how it is reached (window.__flags.listMode):
+  //   ui     - only when the list was reached through the Ad preferences screens
+  //   press  - only after a real mouse sequence on the entry
+  //   direct - only when the advertiser's address is loaded
+  //   never  - never
+  const LIST = '/ads/audience_based_advertising/';
+  // allow: which uses are still allowed [show ads, exclude from ads]; null = no list controls.
+  const advertisers = [
+    { id: 1, name: 'Data Broker One', allow: [true, true] },
+    { id: 2, name: 'Already Done Inc', allow: [false, false] },
+    { id: 3, name: 'Shop Three', allow: [true, true] },
+    { id: 4, name: 'Half Done LLC', allow: [false, true] },
+    { id: 5, name: 'No List Corp', allow: null },
+    { id: 6, name: 'Broken Page Ltd', broken: true },
+  ];
+
+  function errorPage(view) {
+    view.replaceChildren(el('h1', null, span('This page isn\u2019t available right now')),
+      el('p', null, span('This may be because of a technical error that we\u2019re working to get fixed.')),
+      button('Reload page', () => rec('decoy', { what: 'Reload page' })));
+  }
+
+  function advertiserDetail(view, a, withBack) {
+    if (a.broken) return errorPage(view);
+    view.replaceChildren(...[
+      withBack && el('div', { role: 'button', 'aria-label': 'Back', onclick: () => history.back() }, '←'),
+      el('h1', null, span(a.name)),
+      el('p', null, 'You may have interacted with their website, app or store.'),
+      a.allow && row('They uploaded or used a list to reach you.', '', () => {
+        dialog('List usage', 'Back', ['Showing ads to you using a list', 'Excluding you from ads using a list'].map((label, i) => {
+          const btn = button(a.allow[i] ? 'Don\u2019t allow' : 'Allow', () => {
+            a.allow[i] = !a.allow[i];
+            rec('listuse', { id: a.id, use: i, allow: a.allow[i] });
+            btn.querySelector('span').textContent = a.allow[i] ? 'Don\u2019t allow' : 'Allow';
+          });
+          return el('div', null, span(label), btn);
+        }));
+      }),
+    ].filter(Boolean));
+  }
+
+  // The list. viaUi: it was reached by clicking through Ad preferences, not by its address.
+  function advertiserList(view, viaUi) {
+    const mode = window.__flags.listMode;
+    let expanded = false, pressedAt = 0;
+    const list = () => view.replaceChildren(...[
+      el('div', { role: 'button', 'aria-label': 'Back', onclick: () => rec('decoy', { what: 'left the advertiser list' }) }, '←'),
+      el('h1', null, span('Audience-based advertising')),
+      el('a', { href: LIST }, span('Audience-based advertising')),
+      el('div', { role: 'list' }, advertisers.slice(0, expanded ? 6 : 3).map((a) =>
+        el('div', { role: 'listitem' }, el('a', { role: 'link', 'data-adv': a.id,
+          href: `${LIST}${1000000 + a.id}/?should_show_back_button=true` }, span(a.name))))),
+      expanded ? null : button('See more', () => { expanded = true; list(); }),
+    ].filter(Boolean));
+
+    document.addEventListener('pointerdown', (e) => { if (e.target.closest('a[data-adv]')) pressedAt = Date.now(); }, true);
+    // Like React, one delegated listener. If nobody prevented the default action the browser would navigate.
+    document.addEventListener('click', (e) => {
+      const link = e.target.closest('a[data-adv]');
+      if (!link) return;
+      const a = advertisers.find((x) => String(x.id) === link.dataset.adv);
+      if (!e.defaultPrevented) rec('navigated', { id: a.id });
+      e.preventDefault();
+      history.pushState({}, '', link.getAttribute('href'));
+      const opens = mode === 'ui' ? viaUi : mode === 'press' ? Date.now() - pressedAt < 1000 : false;
+      pressedAt = 0;
+      if (opens) advertiserDetail(view, a, true); else errorPage(view);
+    });
+    // Going back one step too far, or forward again, lands on the error page, as on the real site.
+    window.addEventListener('popstate', () => {
+      closeAll.keep = view.closest('[role="dialog"]');
+      closeAll();
+      if (location.pathname === LIST) { expanded = false; list(); } else if (location.pathname.startsWith(LIST)) errorPage(view);
+      else if (closeAll.keep) closeAll.keep.remove();
+      closeAll.keep = null;
+    });
+    list();
+  }
+
+  // An advertiser's address loaded on its own.
+  function advertiserPage(view) {
+    const a = advertisers.find((x) => location.pathname.includes(String(1000000 + x.id)));
+    if (a && window.__flags.listMode === 'direct') advertiserDetail(view, a, false); else errorPage(view);
+  }
+
+  window.mock = { advertiserList, advertiserPage, deep, viewRow, deepSwitchRows, checkboxDialogRow, popupRow, el, span, rec, main, button, dialog, closeAll, radios, switchEl, row, audienceRow, menuRow, inlineSwitchRow, dialogSwitchRow, onOffRow };
 })();

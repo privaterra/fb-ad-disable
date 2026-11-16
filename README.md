@@ -142,13 +142,23 @@ With **Save logs** on, **Copy log** and **Save log** appear during the run and i
 
 | Task | Where | What happens |
 | --- | --- | --- |
-| **Disable list-based advertisers** | Accounts Center → Ad preferences → Audience-based advertising | For every advertiser: open it → *They uploaded or used a list to reach you* → **Don't allow**, for both showing you ads and excluding you from ads. This is the original script this project grew from. |
+| **Disable list-based advertisers** | Accounts Center → Ad preferences → Manage info → Audience-based advertising | For every advertiser: open it → *They uploaded or used a list to reach you* → **Don't allow**, for both showing you ads and excluding you from ads. This is the original script this project grew from. See the note below. |
 | **Hide advertisers you have seen** | Ad preferences → Advertisers you saw ads from | Opens each advertiser in the list and clicks **Hide ads**. |
 | **Restrict ad data settings** | Ad preferences → Manage info | *Activity from other businesses* (formerly "Activity information from ad partners") → not using this information · *Categories used to reach you* → all off · *Ads in other apps* (under "Ads shown outside of Meta") → not showing · *Ads about Meta* → not using your activity · *Social interactions* → Only me. A row that already says so ("Not using this information") is left untouched. |
 | **Clear off-Meta activity history** | Accounts Center → Your information and permissions → Your activity off Meta technologies | **Clear previous activity**. See the note below. |
 | **Disconnect future off-Meta activity** (off by default; Max ticks it) | same page | *Manage future activity* → **Disconnect future activity**. Side effect: "Log in with Facebook" on other sites and apps stops working. See the note below. |
 | **Ad topics: See less** (experimental, off by default) | Ad preferences → Customize ads → Ad topics → See all | Opens each topic and picks **See less**. |
 | **Turn off AI features** | Settings → Posts, Stories, Reels, Profile and tagging, Followers and public content | Turns off **Allow comment summaries on your posts** and any other switch on those pages whose label mentions AI. Lists the AI settings that have no switch on the web (see below). |
+
+### How advertisers are opened
+
+Facebook answers an advertiser with "This page isn't available right now" unless the page is reached the way it expects, and that has changed over time. The script therefore gets to the list by clicking through Ad preferences, as a person does, and opens advertisers in up to three ways. If the first advertisers all come up as the error page it moves to the next way by itself and says so in the log:
+
+1. a plain click on the entry,
+2. the full mouse sequence on the entry,
+3. loading each advertiser's own address, one page load per advertiser. This is slower (allow several seconds per advertiser) and needs the extension or the userscript, because a pasted script does not survive page loads.
+
+If no way works, the step is reported for manual follow-up and the run carries on with the other tasks. In that case open one advertiser by hand: if Facebook shows you the error page too, the fault is on Facebook's side.
 
 ### Off-Meta activity is being retired
 
@@ -203,7 +213,7 @@ Where Facebook offers nothing stricter than Friends (followers, public comments)
 
 - The engine (menu, page navigation and resume, text matching, dry run, progress bars, remembered advertisers, CSV and log export, reporting, the three run modes) is covered by automated tests that drive the real script in Chromium against mock Facebook pages: `npm test`.
 - The advertiser-list flow keeps the click sequence of the original console script this project started from.
-- The automated tests cannot log in to Facebook, so no flow is verified end to end on a live account by them. The setting names come from Meta's help pages and from failure reports of real runs; versions 1.2.0 and 1.2.1 reworked the steps that live runs reported as failing. A live dry run of 1.2.0 handled all but one of the audience and visibility settings and the AI settings; the advertiser steps and the renamed ad rows were reworked in 1.2.1 and are not yet confirmed on a live account. That is why every step is reported and why you should start with a dry run.
+- The automated tests cannot log in to Facebook, so no flow is verified end to end on a live account by them. The setting names come from Meta's help pages and from failure reports of real runs; versions 1.2.0 to 1.2.2 reworked the steps that live runs reported as failing. A live dry run of 1.2.0 handled all but one of the audience and visibility settings and the AI settings. The advertiser steps and the renamed ad rows have been reworked since and are not yet confirmed on a live account: which of the three ways of opening an advertiser Facebook accepts is not known. That is why every step is reported and why you should start with a dry run.
 
 A safety rule that is tested: an option such as "Friends" or "Only me" is only ever clicked inside a dialog, menu or radio group, never elsewhere on the page.
 

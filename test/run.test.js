@@ -15,7 +15,7 @@ const LIB = fs.readFileSync(path.join(__dirname, 'mock', 'lib.js'), 'utf8');
 
 // Serves the mock pages on the real Facebook hostnames. `inject` adds the script
 // to every page, the way a userscript manager would.
-async function mockFacebook(context, { inject = false, offMeta = false } = {}) {
+async function mockFacebook(context, { inject = false, offMeta = false, listMode = 'ui' } = {}) {
   const events = [];
   await context.exposeFunction('__record', (json) => { events.push(JSON.parse(json)); });
   await context.route('**/*', (route) => route.abort()); // never touch the real internet
@@ -30,11 +30,11 @@ async function mockFacebook(context, { inject = false, offMeta = false } = {}) {
     if (to) { // Facebook redirects on the server, so no script ever runs on this address
       return route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<script>location.replace(${JSON.stringify(to)})</script>` });
     }
-    const page = pages[`${host} ${p}`];
+    const page = pages[`${host} ${p.replace(/^(\/ads\/audience_based_advertising)\/\d+$/, '$1/:id')}`];
     return route.fulfill({
       contentType: 'text/html; charset=utf-8',
       body: `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>mock</title></head><body><div id="main"></div>
-        <script>window.__flags = ${JSON.stringify({ offMeta })}</script>
+        <script>window.__flags = ${JSON.stringify({ offMeta, listMode })}</script>
         <script src="/__mock.js"></script><script>(${page ? page.toString() : '() => {}'})()</script>
         ${inject ? '<script src="/__fbad.js"></script>' : ''}</body></html>`,
     });
@@ -222,6 +222,7 @@ test('Stop ends the run and an old unfinished run is offered, not resumed by its
   await configureAndStart(page, { tasks: ['lists', 'seen'] });
   await panel(page).locator('button[name="stop"]').click();
   await panel(page).locator('#summary').waitFor();
+  assert.match(await panel(page).locator('li[data-id="lists"]').textContent(), /stopped before this step finished/);
   const count = events.length;
   await page.waitForTimeout(1500);
   assert.equal(events.length, count, 'nothing happens after Stop');
@@ -294,7 +295,7 @@ test('progress bars, advertiser details CSV, saved log and remembered advertiser
   // Issue 2: the log as a file.
   const logFile = await saved(page, 'savelog');
   assert.match(logFile.file, /^fb-ad-disable-log-[\d-]+\.txt$/);
-  assert.match(logFile.text, /^fb-ad-disable 1\.2\.1 log\n/);
+  assert.match(logFile.text, /^fb-ad-disable 1\.2\.2 log\n/);
   assert.match(logFile.text, /Options: \{.*"saveLog":true/);
   assert.match(logFile.text, /\d\d:\d\d:\d\d   6 advertisers found, 6 to process/);
   assert.match(logFile.text, /\d\d:\d\d:\d\d Finished\.\n$/);
@@ -378,6 +379,47 @@ test('a page reload in the middle of a run is picked up by the same tab only', a
   // Every advertiser was handled. (The one in progress at the reload is done again: the mock forgets its state on reload.)
   assert.deepEqual([...new Set(events.filter((e) => e.type === 'listuse').map((e) => `${e.id}:${e.use}`))].sort(), ['1:0', '1:1', '3:0', '3:1', '4:1']);
   assert.equal(events.filter((e) => e.type === 'decoy').length, 0);
+  await context.close();
+});
+
+// Facebook answers an advertiser with its error page unless it is reached the way it expects.
+// Which way that is cannot be known from here, so each one is tested.
+for (const [listMode, said] of [['press', /another way \(press\)/], ['direct', /another way \(direct\)/]]) {
+  test(`advertisers that only open by "${listMode}" are still processed`, async () => {
+    const context = await browser.newContext();
+    const events = await mockFacebook(context, { inject: true, listMode });
+    await fakeUserscriptApi(context);
+    const page = await context.newPage();
+    const logged = [];
+    page.on('console', (m) => logged.push(m.text()));
+    await page.goto('https://www.facebook.com/settings/');
+    await page.evaluate(() => window.__openMenu());
+    await configureAndStart(page, { tasks: ['lists'], options: { saveInfo: true } });
+    const r = await report(page);
+    assert.equal(r.lists.status, 'changed');
+    assert.match(r.lists.text, /3 disabled, 1 needed no change, 1 had no list controls, 1 failed \(of 6\)/);
+    assert.deepEqual(events.filter((e) => e.type === 'listuse').map((e) => `${e.id}:${e.use}:${e.allow}`).sort(),
+      ['1:0:false', '1:1:false', '3:0:false', '3:1:false', '4:1:false']);
+    assert.ok(logged.some((line) => said.test(line)), 'the log says it changed the way of opening');
+    assert.equal(await panel(page).locator('#advertisers tbody tr').count(), 6, 'each advertiser is booked once');
+    assert.deepEqual(events.filter((e) => e.type === 'decoy' || e.type === 'navigated'), []);
+    await context.close();
+  });
+}
+
+test('when Facebook opens no advertiser at all, the run says so and moves on', async () => {
+  const context = await browser.newContext();
+  const events = await mockFacebook(context, { inject: true, listMode: 'never' });
+  await fakeUserscriptApi(context);
+  const page = await context.newPage();
+  await page.goto('https://www.facebook.com/settings/');
+  await page.evaluate(() => window.__openMenu());
+  await configureAndStart(page, { tasks: ['lists', 'ai'] });
+  const r = await report(page);
+  assert.equal(r.lists.status, 'manual');
+  assert.match(r.lists.text, /for every advertiser, however it is opened/);
+  assert.equal(r.ai_summaries.status, 'changed', 'the next task still runs');
+  assert.deepEqual(events.filter((e) => e.type === 'listuse' || e.type === 'decoy'), []);
   await context.close();
 });
 
