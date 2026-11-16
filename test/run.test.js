@@ -52,7 +52,7 @@ async function fakeUserscriptApi(context) {
 
 const panel = (page) => page.locator('#fb-ad-disable-panel');
 
-async function configureAndStart(page, { level = 'default', tasks, dryRun = false } = {}) {
+async function configureAndStart(page, { level = 'default', tasks, dryRun = false, options = {} } = {}) {
   const p = panel(page);
   await p.locator('button[name="start"]').waitFor();
   if (tasks) {
@@ -62,6 +62,7 @@ async function configureAndStart(page, { level = 'default', tasks, dryRun = fals
   }
   await p.locator(`input[name="level"][value="${level}"]`).check();
   if (dryRun) await p.locator('input[name="dry"]').check();
+  for (const [name, on] of Object.entries(options)) await p.locator(`input[name="${name}"]`).setChecked(on);
   // Test-only speed: far faster than the options offered in the menu.
   await p.locator('select[name="speed"]').evaluate((sel) => { sel.add(new Option('Test', '20')); sel.value = '20'; });
   await p.locator('button[name="start"]').click();
@@ -71,6 +72,27 @@ async function report(page) {
   await panel(page).locator('#summary').waitFor({ timeout: 150000 });
   const rows = await panel(page).locator('li').evaluateAll((els) => els.map((e) => [e.dataset.id, e.dataset.status, e.textContent]));
   return Object.fromEntries(rows.map(([id, status, text]) => [id, { status, text }]));
+}
+
+// Clicks a button in the panel and returns the text of the file it saves.
+async function saved(page, name) {
+  const [download] = await Promise.all([page.waitForEvent('download'), panel(page).locator(`button[name="${name}"]`).click()]);
+  return { file: download.suggestedFilename(), text: fs.readFileSync(await download.path(), 'utf8') };
+}
+
+function parseCsv(text) {
+  const rows = [[]];
+  let cell = '', quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; } else if (c === '"') quoted = false; else cell += c;
+    } else if (c === '"') quoted = true;
+    else if (c === ',') { rows[rows.length - 1].push(cell); cell = ''; } else if (c === '\n') { rows[rows.length - 1].push(cell); cell = ''; rows.push([]); } else if (c !== '\r') cell += c;
+  }
+  rows.pop(); // the file ends with a line break
+  const [head, ...body] = rows;
+  return body.map((r) => Object.fromEntries(head.map((k, i) => [k, r[i]])));
 }
 
 const sets = (events) => Object.fromEntries(events.filter((e) => e.type === 'set').map((e) => [e.id, e.value]));
@@ -190,6 +212,104 @@ test('Stop ends the run and an old unfinished run is offered, not resumed by its
   assert.equal(await panel(page).count(), 0);
   await page.evaluate(() => window.__openMenu());
   await panel(page).locator('button[name="resume"]').waitFor();
+  await context.close();
+});
+
+test('progress bars, advertiser details CSV, saved log and remembered advertisers', async () => {
+  const context = await browser.newContext();
+  const events = await mockFacebook(context, { inject: true });
+  await fakeUserscriptApi(context);
+  const page = await context.newPage();
+  const p = panel(page);
+  const listuse = () => events.filter((e) => e.type === 'listuse').length;
+  await page.goto('https://accountscenter.facebook.com/ads/audience_based_advertising/');
+  await page.evaluate(() => window.__openMenu());
+
+  // The new options and their defaults.
+  await p.locator('button[name="start"]').waitFor();
+  for (const [name, on] of [['remember', true], ['skipKnown', true], ['saveInfo', false], ['saveLog', false]]) {
+    assert.equal(await p.locator(`input[name="${name}"]`).isChecked(), on, `${name} default`);
+  }
+  assert.match(await p.locator('#known').textContent(), /0 remembered/);
+
+  // Run 1: two bars and a time estimate while advertisers are processed.
+  await configureAndStart(page, { tasks: ['lists', 'seen'], options: { saveInfo: true, saveLog: true } });
+  await p.locator('#advlabel', { hasText: /^Advertisers: \d of 5$/ }).waitFor();
+  assert.equal(await p.locator('[role="progressbar"]').count(), 2);
+  assert.match(await p.locator('#eta').textContent(), /^Time left: (under a minute|about \d+ min)/);
+  assert.match(await p.locator('#step').textContent(), /^Step 1 of 2: /);
+  await p.locator('button[name="savelog"]').waitFor(); // available during the run too
+  let r = await report(page);
+  assert.match(r.lists.text, /3 disabled, 2 needed no change, 0 failed \(of 5\)$/);
+  assert.equal(listuse(), 5);
+
+  // Issue 4: the details table and its CSV.
+  assert.equal(await p.locator('#advertisers tbody tr').count(), 10);
+  const csv = await saved(page, 'csv');
+  assert.match(csv.file, /^fb-ad-disable-advertisers-[\d-]+\.csv$/);
+  const rows = parseCsv(csv.text.replace(/^\uFEFF/, ''));
+  assert.equal(rows.length, 10);
+  const broker = rows.find((x) => x.name === 'Data Broker One');
+  assert.equal(broker.task, 'list-based');
+  assert.equal(broker.advertiser_id, '1');
+  assert.equal(broker.result, 'disabled');
+  assert.equal(broker.action, 'clicked “Don’t allow” 2×');
+  assert.equal(broker.list_uses, 'Showing ads to you using a list: allowed | Excluding you from ads using a list: allowed');
+  assert.match(broker.link, /advertiser_id=1$/);
+  assert.match(broker.detail_text, /You may have interacted with their website/);
+  assert.match(broker.processed_at, /^\d{4}-\d\d-\d\dT/);
+  assert.equal(broker.dry_run, 'no');
+  assert.equal(rows.find((x) => x.name === 'Half Done LLC').list_uses,
+    'Showing ads to you using a list: not allowed | Excluding you from ads using a list: allowed');
+  assert.equal(rows.find((x) => x.name === 'No List Corp').result, 'no change needed');
+  assert.deepEqual(rows.filter((x) => x.task === 'seen').map((x) => `${x.name}:${x.result}`).sort(),
+    ['Acme:ads hidden', 'Globex:ads hidden', 'Hooli:ads hidden', 'Initech:ads hidden', 'Umbrella:ads hidden']);
+
+  // Issue 2: the log as a file.
+  const logFile = await saved(page, 'savelog');
+  assert.match(logFile.file, /^fb-ad-disable-log-[\d-]+\.txt$/);
+  assert.match(logFile.text, /^fb-ad-disable 1\.1\.0 log\n/);
+  assert.match(logFile.text, /Options: \{.*"saveLog":true/);
+  assert.match(logFile.text, /\d\d:\d\d:\d\d   5 advertisers found, 5 to process/);
+  assert.match(logFile.text, /\d\d:\d\d:\d\d Finished\.\n$/);
+
+  // Issue 1: advertisers the page confirmed as disabled are remembered and skipped next time.
+  await p.locator('button[name="menu"]').click();
+  await p.locator('#known', { hasText: '4 remembered' }).waitFor();
+  await configureAndStart(page, { tasks: ['lists'], options: { saveInfo: true, saveLog: false } });
+  r = await report(page);
+  assert.match(r.lists.text, /0 disabled, 1 needed no change, 0 failed \(of 5\), 4 skipped as remembered$/);
+  assert.equal(listuse(), 5, 'remembered advertisers are not opened again');
+  assert.equal(await p.locator('#advertisers tbody tr', { hasText: 'skipped (remembered' }).count(), 4);
+  assert.equal(await p.locator('button[name="savelog"]').count(), 0, 'no log buttons unless the option is on');
+
+  // With "skip" off, every advertiser is processed again.
+  await p.locator('button[name="menu"]').click();
+  await configureAndStart(page, { tasks: ['lists'], options: { skipKnown: false, saveInfo: false } });
+  r = await report(page);
+  assert.match(r.lists.text, /3 disabled, 2 needed no change, 0 failed \(of 5\)$/);
+  assert.equal(listuse(), 10);
+  assert.equal(await p.locator('#advertisers').count(), 0, 'no table unless the option is on');
+
+  // The list can be forgotten.
+  await p.locator('button[name="menu"]').click();
+  await p.locator('button[name="forget"]').click();
+  await p.locator('#known', { hasText: '0 remembered' }).waitFor();
+  await context.close();
+});
+
+test('a dry run does not add advertisers to the remembered list', async () => {
+  const context = await browser.newContext();
+  const events = await mockFacebook(context, { inject: true });
+  await fakeUserscriptApi(context);
+  const page = await context.newPage();
+  await page.goto('https://accountscenter.facebook.com/ads/audience_based_advertising/');
+  await page.evaluate(() => window.__openMenu());
+  await configureAndStart(page, { tasks: ['lists'], dryRun: true });
+  await report(page);
+  assert.deepEqual(events, []);
+  await panel(page).locator('button[name="menu"]').click();
+  await panel(page).locator('#known', { hasText: '0 remembered' }).waitFor();
   await context.close();
 });
 

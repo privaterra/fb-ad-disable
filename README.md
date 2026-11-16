@@ -68,9 +68,20 @@ Console mode is fine for a single task such as *Disable list-based advertisers*,
 | **Advertisers and ad data** | Tick the tasks to run (table below). |
 | **Privacy settings level** | Default, Moderate or Max (table below). |
 | **Dry run** | Report what would change without changing anything. |
+| **Remember processed advertisers** (on) | Keep a list of the list-based advertisers confirmed as disabled, for later runs. |
+| **Skip remembered advertisers** (on) | Only process advertisers that are new since earlier runs. The menu shows how many are remembered, with **Forget them** to clear the list. |
+| **Save advertiser details** (off) | Build a table of every advertiser processed, to export as CSV from the report. |
+| **Save logs** (off) | Keep the full log and add **Copy log** and **Save log** buttons. |
 | **Speed** | Pause between clicks. Use *Slow* if steps fail on a slow connection. |
 
-While it runs, the panel shows the current step and a log. **Stop** ends the run after the current click. If a run is interrupted, opening the menu again offers **Resume it**.
+### While it runs
+
+<img src="docs/progress.png" alt="Progress bars and time left during a run" width="372">
+
+- The **top bar** is overall progress: the step number, the percentage done and the estimated time left.
+- A **second bar** appears while advertisers are being processed. The script first opens the whole advertiser list to count it, then fills the bar as it works through them. When the advertisers are done the bar disappears.
+- **Time left** is estimated from how fast the run is actually going: the average time per step so far, and the average time per advertiser. It is rough at the start and improves as the run proceeds. Until an advertiser list has been counted, the estimate says "plus advertisers not counted yet".
+- **Stop** ends the run after the current click. If a run is interrupted, opening the menu again offers **Resume it**.
 
 ### The report
 
@@ -83,7 +94,45 @@ Each step ends in one of these states:
 | 👁 Dry run | What would be changed. |
 | ⚠️ Needs manual check | The script could not do it. Use the **Open page** link and set the value shown. |
 
-**Copy report** puts the report on the clipboard. If something fails on your account, the report plus the log lines in the panel are what is needed to fix the labels.
+**Copy report** puts the report on the clipboard. If something fails on your account, the report plus the log are what is needed to fix the labels.
+
+<img src="docs/report.png" alt="Report with the advertiser details table" width="372">
+
+### Remembered advertisers
+
+With **Remember processed advertisers** on, each list-based advertiser is added to a list once the page itself confirms it is disabled (an "Allow" button is shown and no "Don't allow" button is left). With **Skip remembered advertisers** on, later runs leave those advertisers alone and only open the new ones, which makes repeat runs much shorter.
+
+- The list is kept in this browser only: in the extension's or userscript manager's storage, or in the site's local storage in console mode. It is never sent anywhere.
+- An advertiser the script could not confirm (a failure, or no list-use buttons found) is not remembered, so it is checked again next time.
+- A dry run does not add to the list.
+- Untick **Skip remembered advertisers** to re-check everyone, or use **Forget them** in the menu to clear the list.
+- Only the list-based advertiser task uses this. Advertisers whose ads are already hidden are skipped by Facebook's own page (their button no longer says "Hide ads").
+
+### Advertiser details (CSV)
+
+With **Save advertiser details** on, the report shows a table of every advertiser processed, with **Export CSV** (saves a file) and **Copy CSV**. The file has one row per advertiser and these columns:
+
+| Column | Content |
+| --- | --- |
+| `task` | `list-based` or `seen` |
+| `name` | Advertiser name as shown in the list |
+| `advertiser_id` | The id in the advertiser's link, when there is one |
+| `result` | `disabled`, `no change needed`, `ads hidden`, `failed`, `skipped (remembered…)`, or what a dry run would do |
+| `action` | What was clicked |
+| `list_uses` | Each list use and its state before the change, e.g. `Showing ads to you using a list: allowed` |
+| `link` | The advertiser's entry in ad preferences |
+| `facebook_page` | A link found in the advertiser's panel, when there is one |
+| `list_text` | Full text of the advertiser's row in the list |
+| `detail_text` | Text of the advertiser's panel (why you are in their audience), up to 1,000 characters |
+| `error` | Why it failed, if it did |
+| `processed_at` | Time, ISO 8601 |
+| `dry_run` | `yes` or `no` |
+
+The details are whatever Facebook's page shows for that advertiser; the script cannot see more than you can.
+
+### Saving the log
+
+With **Save logs** on, **Copy log** and **Save log** appear during the run and in the report. The saved text file contains the options used, the report and every log line with its time. Without the option, only the last 300 log lines are kept, and only on screen.
 
 ## What each task does
 
@@ -131,7 +180,7 @@ Where Facebook offers nothing stricter than Friends (followers, public comments)
 
 ## How well tested is it
 
-- The engine (menu, page navigation and resume, text matching, dry run, reporting, the three run modes) is covered by automated tests that drive the real script in Chromium against mock Facebook pages: `npm test`.
+- The engine (menu, page navigation and resume, text matching, dry run, progress bars, remembered advertisers, CSV and log export, reporting, the three run modes) is covered by automated tests that drive the real script in Chromium against mock Facebook pages: `npm test`.
 - The advertiser-list flow keeps the click sequence of the original console script this project started from.
 - No flow has been verified end to end on a live account by the automated tests: they cannot log in to Facebook. The setting names come from Facebook's documented labels. That is why every step is reported and why you should start with a dry run.
 
@@ -139,6 +188,7 @@ A safety rule that is tested: an option such as "Friends" or "Only me" is only e
 
 ## Troubleshooting
 
+- **Reporting a problem.** Run again with **Save logs** ticked and attach the saved log file.
 - **Many steps say "Needs manual check".** Check Facebook is in English (US), try *Slow* speed, and run again; finished steps are quick the second time because they report "Already set".
 - **The panel vanished (console mode).** The page reloaded. Run the script again and it resumes.
 - **A label changed.** Labels live in three tables at the top of `fb-ad-disable.js`: `L` (shared buttons), `AD_SETTINGS` and `PRIVACY`. Each `row` entry is a list of lower-case text fragments; add the new wording next to the old one.
