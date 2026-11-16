@@ -6,7 +6,8 @@ const pages = {
     const m = window.mock;
     const tab = new URLSearchParams(location.search).get('tab') || 'home';
     const A = ['Public', 'Friends', 'Friends except...', 'Only me'];
-    const tabs = ['posts', 'how_people_find_and_contact_you', 'followers_and_public_content', 'profile_and_tagging'];
+    const tabs = ['posts', 'stories', 'reels', 'how_people_find_and_contact_you', 'followers_and_public_content', 'profile_and_tagging'];
+    const LOOKUP = ['Possible Connections', 'Friends of Friends', 'Friends', 'No one'];
     document.body.prepend(m.el('nav', null,
       // Decoy: same text as an audience option, outside any dialog. Must never be clicked.
       m.el('a', { href: '/friends', onclick: (e) => { e.preventDefault(); m.rec('decoy', {}); } }, m.span('Friends')),
@@ -22,27 +23,41 @@ const pages = {
               m.button('Cancel', () => m.closeAll()));
           }));
         }),
+        m.inlineSwitchRow('ai_summaries', 'Allow comment summaries on your posts', true),
+      ],
+      stories: () => [
+        // Facebook moved this row here from "Profile and tagging".
+        m.inlineSwitchRow('share_to_stories', 'Allow others to share your posts to their stories?', true),
+      ],
+      reels: () => [
+        m.deepSwitchRows(
+          ['reel_ai', 'Allow Meta AI to suggest remixes of your reels', true],
+          ['reel_hide_ai', 'Hide AI stickers on your reels', true], // already a restriction: must stay on
+          ['reel_autoplay', 'Autoplay reels', true]),
       ],
       how_people_find_and_contact_you: () => [
         m.menuRow('friend_requests', 'Who can send you friend requests?', 'Everyone', ['Everyone', 'Friends of friends']),
         m.audienceRow('friends_list', 'Who can see your friends list?', 'Public', A),
-        m.audienceRow('lookup_email', 'Who can look you up using the email address you provided?', 'Everyone', ['Everyone', 'Friends of friends', 'Friends', 'Only me']),
-        m.audienceRow('lookup_phone', 'Who can look you up using the phone number you provided?', 'Only me', ['Everyone', 'Friends of friends', 'Friends', 'Only me']),
-        m.inlineSwitchRow('search_engines', 'Do you want search engines outside of Facebook to link to your profile?', true),
+        m.el('h3', null, m.span('Who can Facebook suggest your profile to based on your phone number or email address')),
+        m.viewRow('lookup_email', 'People with your email address', 'Possible Connections', LOOKUP),
+        m.viewRow('lookup_phone', 'People with your phone number', 'No one', LOOKUP),
+        m.checkboxDialogRow('search_engines', 'Do you want search engines outside of Facebook to link to your profile?',
+          'Allow search engines outside of Facebook to link to your profile', true),
       ],
       followers_and_public_content: () => [
         m.audienceRow('follow', 'Who Can Follow Me', 'Public', ['Public', 'Friends']),
-        m.audienceRow('following', 'Who can see the people, Pages and lists you follow?', 'Public', A),
+        m.audienceRow('following', 'Who can see the people, Pages, and lists you follow?', 'Public', A),
         m.audienceRow('public_comments', 'Who can comment on your public posts?', 'Public', ['Public', 'Friends of friends', 'Friends']),
-        m.audienceRow('public_profile_info', 'Public Profile Info', 'Public', ['Public', 'Friends of friends', 'Friends']),
+        // "Public Profile Info" is deliberately missing: the script must report it for manual follow-up.
       ],
       profile_and_tagging: () => [
         m.audienceRow('post_on_profile', 'Who can post on your profile?', 'Friends', ['Friends', 'Only me']),
         m.audienceRow('others_posts', 'Who can see what others post on your profile?', 'Friends', A),
         m.audienceRow('tagged_posts', 'Who can see posts you’re tagged in on your profile?', 'Friends of friends', A),
-        m.dialogSwitchRow('review_tagged', 'Review posts you’re tagged in before the post appears on your profile?', false),
-        m.onOffRow('review_tags', 'Review tags people add to your posts before the tags appear on Facebook?', false),
-        // "Allow others to share your posts to their stories" is deliberately missing: the script must report it for manual follow-up.
+        m.el('h3', null, m.span('Reviewing')),
+        m.deepSwitchRows(
+          ['review_tagged', 'Review posts you’re tagged in before the post appears on your profile?', false],
+          ['review_tags', 'Review tags people add to your own posts before the tags appear on Facebook?', false]),
       ],
     };
     m.main().append(m.el('h1', null, m.span('Settings: ' + tab)), ...(rows[tab] ? rows[tab]() : []));
@@ -65,10 +80,13 @@ const pages = {
   },
 
   // ---- accountscenter: off-Meta activity --------------------------------
-  'ac /info_and_permissions/off_facebook_activity': () => {
+  'ac /info_and_permissions': () => {
     const m = window.mock;
-    m.main().append(
-      m.el('h1', null, m.span('Your activity off Meta technologies')),
+    m.main().append(m.el('h1', null, m.span('Your information and permissions')),
+      m.row('Download your information', '', () => {}),
+      m.row('Your activity off Meta technologies', '', () => m.dialog('Your activity off Meta technologies', 'Back', offMeta())));
+    const offMeta = () => m.el('div', null,
+      m.row('Recent activity', '', () => {}),
       m.row('Clear previous activity', '', () => {
         m.dialog('Clear previous activity', 'Close', m.el('p', null, 'This disconnects your previous activity.'),
           m.button('Clear', () => { m.rec('offclear', {}); m.closeAll(); }));
@@ -87,6 +105,11 @@ const pages = {
       }));
   },
 
+  // The old address no longer leads to the settings.
+  'www /off_facebook_activity': () => {
+    window.mock.main().append(window.mock.el('h1', null, window.mock.span('This content isn\u2019t available right now')));
+  },
+
   // ---- accountscenter: ad preferences -----------------------------------
   'ac /ads': () => {
     const m = window.mock;
@@ -103,18 +126,26 @@ const pages = {
         m.dialog('Categories used to reach you', 'Back', ['Employer', 'Job title', 'Education', 'Relationship status'].map((c, i) =>
           m.el('div', null, m.span(c), m.switchEl(c, i % 2 === 0, (v) => m.rec('category', { name: c, value: v })))));
       }),
-      m.row('Ads shown outside of Meta', '', () => {
-        m.dialog('Ads shown outside of Meta', 'Back', m.switchEl('Ads shown outside of Meta', true, (v) => m.rec('set', { id: 'ad_outside', value: v })));
-      }),
+      m.popupRow('ad_outside', 'Ads shown outside of Meta', 'Allowed', ['Allowed', 'Not allowed']),
       m.row('Social interactions', '', () => {
         m.dialog('Social interactions', 'Back', m.radios(['Friends', 'Only me'], 'Friends', (o) => m.rec('set', { id: 'ad_social', value: o })));
       }));
+    const topic = (name) => m.el('div', { role: 'button', onclick: () => {
+      m.dialog(name, 'Back', m.radios(['No preference', 'See less'], 'No preference', (o) => m.rec('topic', { name, value: o })));
+    } }, m.span(name));
+    const customize = m.el('div', null,
+      m.el('div', { style: 'display:flex;justify-content:space-between' }, m.el('h2', null, m.span('Advertisers you saw ads from')),
+        m.el('div', { role: 'button', onclick: () => m.rec('decoy', { what: 'wrong See all' }) }, m.span('See all'))),
+      m.el('p', null, m.span('Choose the ad topics you want to see less of.')),
+      m.el('div', { style: 'display:flex;justify-content:space-between' }, m.el('h2', null, m.span('Ad topics')),
+        m.el('div', { role: 'button', onclick: () => m.dialog('Ad topics', 'Back', ['Alcohol', 'Parenting', 'Pets'].map(topic)) }, m.span('See all'))));
+    const show = (which) => { customize.hidden = which !== customize; manage.hidden = which !== manage; };
     m.main().append(
       m.el('h1', null, m.span('Ad preferences')),
       m.el('div', { role: 'tablist' },
-        m.el('div', { role: 'tab' }, m.span('Customize ads')),
-        m.el('div', { role: 'tab', onclick: () => manage.removeAttribute('hidden') }, m.span('Manage info'))),
-      manage);
+        m.el('div', { role: 'tab', onclick: () => show(customize) }, m.span('Customize ads')),
+        m.el('div', { role: 'tab', onclick: () => show(manage) }, m.span('Manage info'))),
+      customize, manage);
   },
 
   // ---- accountscenter: advertisers that uploaded a list ------------------

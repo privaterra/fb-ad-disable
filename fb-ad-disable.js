@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FB Ad Disable & Privacy Hardener
 // @namespace    https://github.com/privaterra/fb-ad-disable
-// @version      1.1.0
+// @version      1.2.0
 // @description  Opt out of advertiser lists, restrict ad data use and tighten Facebook privacy settings from one menu.
 // @license      MIT
 // @match        https://www.facebook.com/*
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.1.0';
+  const VERSION = '1.2.0';
   const TAG = '[fb-ad-disable]';
   const KEY = 'fbAdDisableState';
   const MEMORY_KEY = 'fbAdDisableAdvertisers';
@@ -86,6 +86,8 @@
       hint: 'Stops new off-Meta activity being linked to your account. Side effect: “Log in with Facebook” on other sites stops working.' },
     { id: 'topics', on: false, label: 'Ad topics: “See less” (experimental)',
       hint: 'Walks the ad topics list and picks “See less” for each one.' },
+    { id: 'ai', on: true, label: 'Turn off AI features',
+      hint: 'Switches off the AI settings Facebook offers on the web (comment summaries and any AI switch found in settings) and lists the ones you have to change by hand. Meta AI itself cannot be removed.' },
   ];
 
   const LEVELS = [
@@ -101,56 +103,88 @@
   const ADS = AC + '/ads/';
 
   // value: string[] = option to select, boolean = switch position, 'alloff' = turn every switch off.
+  const AD_TAB = ['manage info'];
   const AD_SETTINGS = [
-    { id: 'ad_partners', title: 'Activity information from ad partners', url: ADS, tab: ['manage info'],
+    { id: 'ad_partners', title: 'Activity information from ad partners', url: ADS, tab: AD_TAB,
       row: ['activity information from ad partners'], steps: [['review setting', 'review settings']],
       all: ["no, don't make my ads more relevant"], mode: 'starts', confirm: ['confirm', 'save', 'done'],
       say: '“No, don’t make my ads more relevant by using this information”' },
-    { id: 'ad_categories', title: 'Categories used to reach you', url: ADS, tab: ['manage info'],
+    { id: 'ad_categories', title: 'Categories used to reach you', url: ADS, tab: AD_TAB,
       row: ['categories used to reach you'], all: 'alloff' },
-    { id: 'ad_outside', title: 'Ads shown outside of Meta', url: ADS, tab: ['manage info'],
-      row: ['ads shown outside of meta', 'ads shown off of meta', 'ads shown off meta'],
-      all: ['not allowed', "don't allow", 'no'], elseToggle: false, say: '“Not allowed”' },
-    { id: 'ad_social', title: 'Social interactions in ads', url: ADS, tab: ['manage info'],
+    { id: 'ad_outside', title: 'Ads shown outside of Meta', url: ADS, tab: AD_TAB,
+      row: ['ads shown outside of meta', 'ads shown off of meta', 'ads shown off meta', 'ads from ad partners'],
+      all: ['not allowed', "don't allow", "don't show me ads from ad partners", 'no'], elseToggle: false, say: '“Not allowed”' },
+    { id: 'ad_social', title: 'Social interactions in ads', url: ADS, tab: AD_TAB,
       row: ['social interactions'], all: ['only me'] },
   ];
 
-  const FRIENDS = ['friends'], ONLY_ME = ['only me'], FOF = ['friends of friends'];
+  // Settings tabs. A setting can list several: Facebook moves rows between them,
+  // so the next tab is tried when the row is not on the first.
+  const TAB = {
+    posts: SETTINGS + 'posts',
+    stories: SETTINGS + 'stories',
+    reels: SETTINGS + 'reels',
+    find: SETTINGS + 'how_people_find_and_contact_you',
+    followers: SETTINGS + 'followers_and_public_content',
+    tagging: SETTINGS + 'profile_and_tagging',
+  };
+
+  const FRIENDS = ['friends'], ONLY_ME = ['only me'], FOF = ['friends of friends'], NO_ONE = ['no one', 'only me'];
   const PRIVACY = [
-    { id: 'future_posts', title: 'Who can see your future posts', url: SETTINGS + 'posts',
+    { id: 'future_posts', title: 'Who can see your future posts', urls: [TAB.posts],
       row: ['who can see your future posts'], moderate: FRIENDS, max: ONLY_ME },
-    { id: 'past_posts', title: 'Limit who can see past posts', url: SETTINGS + 'posts',
+    { id: 'past_posts', title: 'Limit who can see past posts', urls: [TAB.posts],
       custom: 'pastPosts', moderate: true, max: true, say: '“Limit past posts”' },
-    { id: 'friend_requests', title: 'Who can send you friend requests', url: SETTINGS + 'how_people_find_and_contact_you',
+    { id: 'friend_requests', title: 'Who can send you friend requests', urls: [TAB.find],
       row: ['who can send you friend requests'], moderate: FOF, max: FOF },
-    { id: 'friends_list', title: 'Who can see your friends list', url: SETTINGS + 'how_people_find_and_contact_you',
+    { id: 'friends_list', title: 'Who can see your friends list', urls: [TAB.find],
       row: ['who can see your friends list'], moderate: FRIENDS, max: ONLY_ME },
-    { id: 'lookup_email', title: 'Who can look you up by email address', url: SETTINGS + 'how_people_find_and_contact_you',
-      row: ['look you up using the email address'], moderate: FRIENDS, max: ONLY_ME },
-    { id: 'lookup_phone', title: 'Who can look you up by phone number', url: SETTINGS + 'how_people_find_and_contact_you',
-      row: ['look you up using the phone number'], moderate: FRIENDS, max: ONLY_ME },
-    { id: 'search_engines', title: 'Search engines outside Facebook link to your profile', url: SETTINGS + 'how_people_find_and_contact_you',
-      row: ['search engines outside of facebook'], moderate: false, max: false },
-    { id: 'follow', title: 'Who can follow you', url: SETTINGS + 'followers_and_public_content',
-      row: ['who can follow me'], moderate: FRIENDS, max: FRIENDS },
-    { id: 'following', title: 'Who can see the people, Pages and lists you follow', url: SETTINGS + 'followers_and_public_content',
-      row: ['people, pages and lists you follow'], moderate: FRIENDS, max: ONLY_ME },
-    { id: 'public_comments', title: 'Who can comment on your public posts', url: SETTINGS + 'followers_and_public_content',
+    { id: 'lookup_email', title: 'Who can look you up by email address', urls: [TAB.find],
+      row: ['people with your email address', 'look you up using the email address', 'email address you provided'],
+      moderate: FRIENDS, max: NO_ONE, say: { max: '“No one” (or “Only me”)' } },
+    { id: 'lookup_phone', title: 'Who can look you up by phone number', urls: [TAB.find],
+      row: ['people with your phone number', 'look you up using the phone number', 'phone number you provided'],
+      moderate: FRIENDS, max: NO_ONE, say: { max: '“No one” (or “Only me”)' } },
+    { id: 'search_engines', title: 'Search engines outside Facebook link to your profile', urls: [TAB.find],
+      row: ['search engines outside of facebook', 'search engines to link to your profile', 'search engines outside facebook'],
+      moderate: false, max: false },
+    { id: 'follow', title: 'Who can follow you', urls: [TAB.followers],
+      row: ['who can follow me', 'who can follow you'], moderate: FRIENDS, max: FRIENDS },
+    { id: 'following', title: 'Who can see the people, Pages and lists you follow', urls: [TAB.followers, TAB.find, TAB.posts],
+      row: ['lists you follow'], moderate: FRIENDS, max: ONLY_ME },
+    { id: 'public_comments', title: 'Who can comment on your public posts', urls: [TAB.followers],
       row: ['who can comment on your public posts', 'public post comments'], moderate: FRIENDS, max: FRIENDS },
-    { id: 'public_profile_info', title: 'Who can like or comment on public profile info', url: SETTINGS + 'followers_and_public_content',
+    { id: 'public_profile_info', title: 'Who can like or comment on public profile info', urls: [TAB.followers],
       row: ['public profile info'], moderate: FRIENDS, max: FRIENDS },
-    { id: 'post_on_profile', title: 'Who can post on your profile', url: SETTINGS + 'profile_and_tagging',
+    { id: 'post_on_profile', title: 'Who can post on your profile', urls: [TAB.tagging],
       row: ['who can post on your profile'], moderate: FRIENDS, max: ONLY_ME },
-    { id: 'others_posts', title: 'Who can see what others post on your profile', url: SETTINGS + 'profile_and_tagging',
+    { id: 'others_posts', title: 'Who can see what others post on your profile', urls: [TAB.tagging],
       row: ['who can see what others post on your profile'], moderate: FRIENDS, max: ONLY_ME },
-    { id: 'tagged_posts', title: 'Who can see posts you are tagged in on your profile', url: SETTINGS + 'profile_and_tagging',
+    { id: 'tagged_posts', title: 'Who can see posts you are tagged in on your profile', urls: [TAB.tagging],
       row: ["who can see posts you're tagged in on your profile"], moderate: FRIENDS, max: ONLY_ME },
-    { id: 'review_tagged', title: 'Review posts you are tagged in before they appear on your profile', url: SETTINGS + 'profile_and_tagging',
+    { id: 'review_tagged', title: 'Review posts you are tagged in before they appear on your profile', urls: [TAB.tagging],
       row: ["review posts you're tagged in before"], moderate: true, max: true },
-    { id: 'review_tags', title: 'Review tags people add to your posts', url: SETTINGS + 'profile_and_tagging',
-      row: ['review tags people add to your posts'], moderate: true, max: true },
-    { id: 'share_to_stories', title: 'Allow others to share your posts to their stories', url: SETTINGS + 'profile_and_tagging',
-      row: ['allow others to share your posts to their stor', 'allow others to share your public stor'], max: false },
+    { id: 'review_tags', title: 'Review tags people add to your posts', urls: [TAB.tagging],
+      row: ['review tags people add to your'], moderate: true, max: true },
+    { id: 'share_to_stories', title: 'Allow others to share your posts to their stories', urls: [TAB.tagging, TAB.stories, TAB.posts],
+      row: ['share your posts to their stor', 'share your public stor', 'to their own stor'], max: false },
+  ];
+
+  // AI. Only what Facebook exposes as a setting on the web can be switched off here.
+  const AI_SETTINGS = [
+    { id: 'ai_summaries', title: 'AI comment summaries on your posts', urls: [TAB.posts, TAB.followers],
+      row: ['comment summaries'], all: false, optional: true },
+  ];
+  const AI_SCAN = ['posts', 'stories', 'reels', 'tagging', 'followers'];
+  const AI_WORDS = /\bmeta ai\b|\bai\b|comment summar|cloud processing|artificial intelligence/;
+  const AI_SKIP = /\b(hide|block|limit|restrict|mute|opt out|turn off|disable|label|don't|do not|never)\b/;
+  const AI_BY_HAND = [
+    { id: 'ai_camera_roll', title: 'AI: camera roll cloud processing', url: WWW + '/settings/',
+      manual: 'Phone app only: Facebook app → Settings → “Camera roll sharing suggestions” → switch both options off.' },
+    { id: 'ai_training', title: 'AI: use of your information to train Meta AI', url: WWW + '/privacy/genai',
+      manual: 'No switch exists. Where your region allows it, this Privacy Center page links to the form to object.' },
+    { id: 'ai_chats', title: 'AI: Meta AI chats and memory', url: 'https://www.meta.ai/',
+      manual: 'Delete your Meta AI chats and saved memories in Meta AI’s own settings. Meta AI cannot be removed from search or Messenger; you can mute its chat.' },
   ];
 
   // ---------------------------------------------------------------------------
@@ -204,6 +238,7 @@
   class Abort extends Error {}
   class DryRun extends Error {}
   class Renav extends Error {}
+  class RowMissing extends Error {}
 
   // ---------------------------------------------------------------------------
   // DOM helpers
@@ -219,7 +254,19 @@
     mode === 'exact' ? text === n : mode === 'starts' ? text.startsWith(n) : text.includes(n));
 
   const dialogs = () => [...document.querySelectorAll('[role="dialog"]')].filter(visible);
-  const topLayer = () => { const d = dialogs(); return d[d.length - 1] || null; };
+  // A dialog really is in front when a point inside it belongs to it. Facebook keeps other,
+  // hidden dialogs in the page (chat windows), so "the last one" is not reliable.
+  function inFront(d) {
+    const r = d.getBoundingClientRect();
+    const left = Math.max(r.left, 0), right = Math.min(r.right, innerWidth);
+    const top = Math.max(r.top, 0), bottom = Math.min(r.bottom, innerHeight);
+    if (right - left < 2 || bottom - top < 2) return false; // off screen
+    return [[0.5, 0.5], [0.25, 0.25], [0.75, 0.75]].some(([fx, fy]) => {
+      const at = document.elementsFromPoint(left + (right - left) * fx, top + (bottom - top) * fy).find((e) => e.id !== 'fb-ad-disable-panel');
+      return !!at && d.contains(at);
+    });
+  }
+  const topLayer = () => dialogs().filter(inFront).pop() || null;
 
   function searchText(root, needles, mode) {
     const out = [];
@@ -234,6 +281,13 @@
     if (!out.length) {
       for (const el of root.querySelectorAll('[aria-label]')) {
         if (hit(norm(el.getAttribute('aria-label')), needles, mode) && visible(el)) out.push(el);
+      }
+    }
+    if (!out.length && mode !== 'exact') {
+      // The label may be split over several nodes: take the smallest element whose whole text matches.
+      for (const el of root.querySelectorAll('span,div,label,h1,h2,h3,h4,p,a')) {
+        if (el.textContent.length > 400 || !hit(norm(el.textContent), needles, mode) || !visible(el)) continue;
+        if (![...el.children].some((c) => hit(norm(c.textContent), needles, mode))) out.push(el);
       }
     }
     return out;
@@ -291,11 +345,25 @@
 
   const say = (el) => (el.getAttribute('aria-label') || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 70);
 
+  // Elements that appeared after the last row clicks: the pop-up a row opened.
+  let fresh = [];
+
   // Clicks a row and reports whether a new dialog or page opened.
   async function openRow(el) {
     const before = dialogs().length + '|' + location.href;
-    click(el);
-    await settle();
+    const url = location.href;
+    const added = [];
+    const collect = (muts) => { for (const m of muts) for (const n of m.addedNodes) if (n.nodeType === 1) added.push(n); };
+    const mo = new MutationObserver(collect);
+    mo.observe(document.body, { childList: true, subtree: true });
+    try {
+      click(el);
+      await settle();
+    } finally {
+      collect(mo.takeRecords());
+      mo.disconnect();
+    }
+    if (location.href === url) fresh.push(...added.filter((n) => n.isConnected && !n.contains(el)));
     return before !== dialogs().length + '|' + location.href;
   }
 
@@ -303,10 +371,30 @@
   const GROUP_SEL = '[role="dialog"],[role="menu"],[role="listbox"],[role="radiogroup"]';
   const SWITCH_SEL = '[role="switch"],[role="checkbox"],input[type="checkbox"]';
 
-  // Options are only ever picked inside a dialog, menu or radio group, so a
-  // same-named link elsewhere on the page ("Friends") can never be clicked.
-  const findOption = (needles, mode) =>
-    findText(needles, { mode }).filter((el) => el.closest(OPTION_SEL) || el.closest(GROUP_SEL));
+  const floating = (el) => {
+    for (let p = el; p && p !== document.body; p = p.parentElement) {
+      if (/^(fixed|absolute)$/.test(getComputedStyle(p).position)) return true;
+    }
+    return false;
+  };
+
+  // Options are only ever picked inside a dialog, menu or radio group, or inside a pop-up
+  // that the row just opened, so a same-named link elsewhere on the page ("Friends") can
+  // never be clicked.
+  const findOption = (needles, mode) => findText(needles, { mode }).filter((el) =>
+    el.closest(OPTION_SEL) || el.closest(GROUP_SEL) || (fresh.some((n) => n.contains(el)) && floating(el)));
+
+  // A "View" / "Edit" style button that belongs to the row containing `el`.
+  // It has to sit on the same line of the screen, so a neighbouring row's button is never taken.
+  function rowButton(el, needles = ['view', 'edit', 'change', 'manage']) {
+    const r = el.getBoundingClientRect();
+    const sameLine = (b) => { const y = b.getBoundingClientRect(); const mid = y.top + y.height / 2; return mid >= r.top - 24 && mid <= r.bottom + 24; };
+    for (let p = el.parentElement, i = 0; p && p !== document.body && i < 10 && p.textContent.length < 500; p = p.parentElement, i++) {
+      const btn = searchText(p, needles, 'exact').find((b) => b !== el && sameLine(b));
+      if (btn) return btn;
+    }
+    return null;
+  }
 
   function checkedState(el) {
     const holder = el.closest('[role="radio"],[role="menuitemradio"],[role="option"],[role="checkbox"],[role="switch"]');
@@ -341,14 +429,32 @@
   const switchOn = (sw) => (sw.matches('input') ? sw.checked : sw.getAttribute('aria-checked') === 'true');
   const switchesIn = (root) => [...root.querySelectorAll(SWITCH_SEL)].filter(visible);
 
-  // The single switch that belongs to the row containing `el`, if there is one.
+  // The switch that belongs to the row containing `el`, if there is one: first the only switch
+  // inside a shared container, then the one on the same line of the screen.
   function switchNear(el) {
-    for (let p = el, i = 0; p && p !== document.body && i < 5; p = p.parentElement, i++) {
+    for (let p = el, i = 0; p && p !== document.body && i < 12; p = p.parentElement, i++) {
       const found = switchesIn(p);
-      if (found.length > 1 || p.textContent.length > 600) return null;
+      if (found.length > 1 || p.textContent.length > 600) break;
       if (found.length === 1) return found[0];
     }
-    return null;
+    const r = el.getBoundingClientRect();
+    const y = r.top + r.height / 2;
+    const near = switchesIn(document.body)
+      .map((sw) => { const b = sw.getBoundingClientRect(); return { sw, d: Math.abs(b.top + b.height / 2 - y) }; })
+      .filter((x) => x.d <= Math.max(28, r.height))
+      .sort((a, b) => a.d - b.d);
+    return near.length && (near.length === 1 || near[1].d > near[0].d * 2 + 4) ? near[0].sw : null;
+  }
+
+  // What a switch controls: its accessible name, or the text of the row around it.
+  function switchLabel(sw) {
+    const named = sw.getAttribute('aria-label') ||
+      (sw.getAttribute('aria-labelledby') || '').split(/\s+/).map((id) => (document.getElementById(id) || {}).textContent || '').join(' ');
+    if (clip(named, 160).length > 3) return clip(named, 160);
+    for (let p = sw.parentElement, i = 0; p && p !== document.body && i < 12; p = p.parentElement, i++) {
+      if (clip(p.textContent, 400).length > 5) return clip(p.textContent, 160);
+    }
+    return '';
   }
 
   async function setSwitch(sw, on) {
@@ -520,26 +626,33 @@
       const tab = findText(s.tab)[0];
       if (tab) { click(tab); await settle(); }
     }
-    const row = await waitFor(() => findText(s.row, { mode: 'includes' })[0], 10000, `the “${s.title}” row`);
+    const row = await waitFor(() => findText(s.row, { mode: 'includes' })[0], 10000).catch(() => null);
+    if (!row) throw new RowMissing(`could not find the “${s.title}” row`);
 
     if (typeof value === 'boolean') {
+      const onlyInLayer = () => { const layer = topLayer(); const list = layer ? switchesIn(layer) : []; return list.length === 1 ? list[0] : null; };
       let sw = switchNear(row);
-      if (!sw) {
+      if (!sw) { // not a switch in the row itself: the row opens something
         await openRow(row);
-        const layer = topLayer();
-        const inLayer = layer ? switchesIn(layer) : [];
-        sw = inLayer.length === 1 ? inLayer[0] : switchNear(row);
+        sw = onlyInLayer() || (row.isConnected ? switchNear(row) : null);
+        if (!sw && !findOption([...t('on'), ...t('off')], 'exact').length) {
+          const btn = row.isConnected && rowButton(row);
+          if (btn) { await openRow(btn); sw = onlyInLayer(); }
+        }
       }
-      if (sw) return setSwitch(sw, value);
-      const r = await choose(value ? t('on') : t('off'));
-      if (r.status === 'changed') await confirmIf(s.confirm);
+      const r = sw ? await setSwitch(sw, value) : await choose(value ? t('on') : t('off'));
+      if (r.status === 'changed') await confirmIf([...(s.confirm || t('confirm')), 'turn off', 'turn on']);
       return r;
     }
 
-    const opened = await openRow(row);
+    let opened = await openRow(row);
+    if (!opened && !(value !== 'alloff' && findOption(value, s.mode || 'exact').length)) {
+      const btn = row.isConnected && rowButton(row); // e.g. the "View" link next to the row
+      if (btn) opened = await openRow(btn);
+    }
     for (const step of s.steps || []) {
       const el = findText(step)[0];
-      if (el) { click(el); await settle(); }
+      if (el) await openRow(el);
     }
     if (value === 'alloff') {
       if (!opened) throw new Error('the setting did not open');
@@ -556,6 +669,26 @@
     }
     if (r.status === 'changed') await confirmIf(s.confirm);
     return r;
+  }
+
+  // What is on screen when a step fails, for the log: enough to correct a label, with
+  // email addresses and long numbers removed.
+  function snapshot() {
+    const layer = topLayer();
+    const root = layer || document.querySelector('[role="main"]') || document.body;
+    const texts = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n && texts.length < 40; n = walker.nextNode()) {
+      const el = n.parentElement;
+      const text = clip(n.nodeValue, 70);
+      if (text.length < 3 || !el || /^(SCRIPT|STYLE|NOSCRIPT)$/.test(el.tagName) || texts.includes(text) || !visible(el)) continue;
+      texts.push(text);
+    }
+    const controls = [...root.querySelectorAll('[role="radio"],[role="menuitemradio"],[role="switch"],[role="checkbox"],input[type="checkbox"],input[type="radio"]')]
+      .filter(visible).slice(0, 15)
+      .map((el) => `${el.getAttribute('role') || el.type} ${(el.matches('input') ? el.checked : el.getAttribute('aria-checked') === 'true') ? 'on' : 'off'} “${clip(switchLabel(el), 40)}”`);
+    return `${layer ? 'pop-up on' : 'page'} ${location.pathname}${location.search} | text: ${texts.join(' · ')} | controls: ${controls.join(', ') || 'none'}`
+      .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, '[email]').replace(/\+?\d[\d\s().-]{6,}\d/g, '[number]').slice(0, 1500);
   }
 
   // "Limit past posts": a button, then a confirmation with the same label.
@@ -724,7 +857,16 @@
   // Walks a list one entry at a time: open it, run `action`, come back.
   async function drillList(doneKey, action) {
     const scope = () => topLayer() || document.body;
-    const items = () => [...scope().querySelectorAll('[role="listitem"]')].filter((el) => visible(el) && norm(el.textContent));
+    const skip = [...t('back'), ...t('close'), ...t('seeAll'), ...t('seeMore'), ...t('confirm')];
+    const items = () => {
+      const list = [...scope().querySelectorAll('[role="listitem"]')].filter((el) => visible(el) && norm(el.textContent));
+      if (list.length || !topLayer()) return list;
+      // A pop-up whose entries are plain buttons or links.
+      return [...scope().querySelectorAll('[role="button"],[role="link"],a[href]')].filter((el) => {
+        const text = norm(el.textContent);
+        return visible(el) && text.length > 1 && text.length < 80 && !skip.includes(text) && !skip.includes(norm(el.getAttribute('aria-label')));
+      });
+    };
     const keyOf = (el) => norm(el.textContent).slice(0, 80);
     const done = new Set(state[doneKey] || []);
     let changed = 0, dry = 0, fails = 0;
@@ -810,16 +952,36 @@
   }
 
   async function runTopics() {
-    const row = await waitFor(() => findText(['ad topics'], { mode: 'includes' })[0], 10000, 'the “Ad topics” section');
-    await openRow(row);
-    const all = findText([...t('seeAll'), 'view and manage topics'])[0];
-    if (all) { click(all); await settle(); }
+    const tab = findText(['customize ads', 'customise ads'])[0];
+    if (tab) { click(tab); await settle(); }
+    const find = () => findText(['ad topics'])[0] || findText(['ad topics'], { mode: 'includes' })[0];
+    const label = await waitFor(find, 10000).catch(() => null);
+    if (!label) throw new RowMissing('could not find the “Ad topics” section');
+    const all = rowButton(label, [...t('seeAll'), 'view and manage topics', 'see all topics']); // "See all" next to it
+    await openRow(all || label);
     return drillList('topicsDone', () => choose(['see less'], 'exact', 4000));
   }
 
+  // Finds a row, walking down the Accounts Center menus to it when it is not on screen yet.
+  async function reach(target, via, what) {
+    const find = () => findText(target, { mode: 'includes' })[0];
+    let el = await waitFor(find, 6000).catch(() => null);
+    for (const step of via) {
+      if (el) break;
+      const next = findText(step, { mode: 'includes' })[0];
+      if (!next) continue;
+      await openRow(next);
+      el = await waitFor(find, 5000).catch(() => null);
+    }
+    if (!el) throw new RowMissing(`could not find ${what}`);
+    return el;
+  }
+
+  const OFF_META_PATH = [['your information and permissions'],
+    ['your activity off meta technologies', 'activity off meta', 'off-meta activity', 'off-facebook activity']];
+
   async function runOffClear() {
-    const row = await waitFor(() => findText(['clear previous activity', 'clear history'], { mode: 'includes' })[0],
-      10000, '“Clear previous activity”');
+    const row = await reach(['clear previous activity', 'clear history'], OFF_META_PATH, '“Clear previous activity”');
     if (!(await openRow(row))) throw new Error('the confirmation did not open');
     const btn = findText(['clear previous activity', 'clear history', 'clear']).filter((el) => el !== row).pop();
     if (!btn) throw new Error('the “Clear” button was not found');
@@ -829,10 +991,10 @@
   }
 
   async function runOffFuture() {
-    const row = await waitFor(() => findText(['manage future activity'], { mode: 'includes' })[0], 10000, '“Manage future activity”');
+    const row = await reach(['manage future activity'], OFF_META_PATH, '“Manage future activity”');
     await openRow(row);
     const again = findText(['manage future activity']).filter((el) => el !== row).pop(); // explainer screen
-    if (again) { click(again); await settle(); }
+    if (again) await openRow(again);
     let r;
     try {
       r = await choose(['disconnect future activity'], 'exact', 6000);
@@ -848,27 +1010,69 @@
     return { status: 'changed', detail: 'future activity disconnected' };
   }
 
+  // Turns off every switch on a settings page whose label is about AI. Labels that
+  // already describe a restriction ("Hide…", "Block…") are left alone.
+  async function scanAi() {
+    const root = () => document.querySelector('[role="main"]') || document.body;
+    await waitFor(() => switchesIn(root()).length, 4000).catch(() => null);
+    const seen = new Set();
+    const off = [], would = [];
+    for (let i = 0; i < 20; i++) {
+      check();
+      const sw = switchesIn(root()).find((x) => {
+        const label = norm(switchLabel(x));
+        return label && !seen.has(label) && AI_WORDS.test(label) && !AI_SKIP.test(label.slice(0, 40));
+      });
+      if (!sw) break;
+      const label = switchLabel(sw);
+      seen.add(norm(label));
+      if (!switchOn(sw)) continue;
+      try {
+        act(sw, `turn off “${label}”`);
+        off.push(label);
+        await settle();
+        await confirmIf([...t('confirm'), 'turn off']);
+      } catch (e) {
+        if (!(e instanceof DryRun)) throw e;
+        would.push(label);
+      }
+    }
+    if (!seen.size) return { status: 'info', detail: 'no AI switches on this page' };
+    if (would.length) return { status: 'dry', detail: `would turn off: ${would.join('; ')}` };
+    return off.length ? { status: 'changed', detail: `turned off: ${off.join('; ')}` }
+      : { status: 'already', detail: `${seen.size} AI switch${seen.size > 1 ? 'es' : ''} already off` };
+  }
+
   const CUSTOM = { pastPosts };
 
   function buildUnits(o) {
     const units = [];
     const on = (id) => o.tasks.includes(id);
+    // The address to use now, and whether another one is left to try if the row is not there.
+    const where = (id, urls) => { const i = Math.min(state.alt[id] || 0, urls.length - 1); return { url: urls[i], next: i < urls.length - 1 }; };
     const setting = (s, value) => ({
-      id: s.id, title: s.title, url: s.url,
-      manual: `Set to ${s.say || describe(value)}.`,
+      id: s.id, title: s.title, optional: s.optional, ...where(s.id, s.urls || [s.url]),
+      manual: `Set to ${(typeof s.say === 'object' ? s.say[o.level] : s.say) || describe(value)}.`,
       run: () => (s.custom ? CUSTOM[s.custom]() : applySetting(s, value)),
     });
+    const offMeta = [AC + '/info_and_permissions/', WWW + '/off_facebook_activity/'];
     if (on('lists')) units.push({ id: 'lists', advertisers: true, title: 'Disable list-based advertisers', url: ADS + 'audience_based_advertising/',
       manual: 'Open each advertiser → “They uploaded or used a list to reach you” → choose “Don’t allow” for both options.', run: runLists });
     if (on('seen')) units.push({ id: 'seen', advertisers: true, title: 'Hide advertisers you have seen', url: WWW + '/adpreferences/advertisers',
       manual: 'Click “Hide ads” next to each advertiser.', run: runSeen });
     if (on('adsettings')) for (const s of AD_SETTINGS) units.push(setting(s, s.all));
     if (on('topics')) units.push({ id: 'topics', title: 'Ad topics: See less', url: ADS,
-      manual: 'Open “Ad topics”, then choose “See less” for each topic.', run: runTopics });
-    if (on('offclear')) units.push({ id: 'offclear', title: 'Clear off-Meta activity history', url: WWW + '/off_facebook_activity/',
-      manual: 'Choose “Clear previous activity” and confirm.', run: runOffClear });
-    if (on('offfuture')) units.push({ id: 'offfuture', title: 'Disconnect future off-Meta activity', url: WWW + '/off_facebook_activity/',
-      manual: 'Choose “Manage future activity” → “Disconnect future activity” and confirm.', run: runOffFuture });
+      manual: 'On the “Customize ads” tab, click “See all” next to “Ad topics”, then choose “See less” for each topic.', run: runTopics });
+    if (on('offclear')) units.push({ id: 'offclear', title: 'Clear off-Meta activity history', ...where('offclear', offMeta),
+      manual: 'Accounts Center → Your information and permissions → Your activity off Meta technologies → “Clear previous activity”, then confirm.', run: runOffClear });
+    if (on('offfuture')) units.push({ id: 'offfuture', title: 'Disconnect future off-Meta activity', ...where('offfuture', offMeta),
+      manual: 'Accounts Center → Your information and permissions → Your activity off Meta technologies → “Manage future activity” → “Disconnect future activity”, then confirm.', run: runOffFuture });
+    if (on('ai')) {
+      for (const s of AI_SETTINGS) units.push(setting(s, s.all));
+      for (const tab of AI_SCAN) units.push({ id: 'ai_scan_' + tab, title: `AI switches on the “${tab}” settings page`, url: TAB[tab],
+        manual: 'Look through this settings page for switches that mention AI and turn them off.', run: scanAi });
+      for (const item of AI_BY_HAND) units.push({ ...item, byHand: true });
+    }
     if (o.level !== 'default') for (const s of PRIVACY) if (s[o.level] !== undefined) units.push(setting(s, s[o.level]));
     return units;
   }
@@ -900,22 +1104,38 @@
         ui.step(state.idx, units.length, unit.title);
         eta();
         let res;
-        try {
-          await goto(unit);
-          if (!arriving) log(`${state.idx + 1}/${units.length} ${unit.title}`);
-          res = await unit.run();
-        } catch (e) {
-          if (e instanceof Abort) throw e;
-          if (e instanceof Renav && (state.renav[unit.id] = (state.renav[unit.id] || 0) + 1) <= 2) await hardNav(unit);
-          res = e instanceof DryRun ? { status: 'dry', detail: 'would ' + e.message } : { status: 'manual', detail: e.message };
+        fresh = [];
+        if (unit.byHand) {
+          log(`${state.idx + 1}/${units.length} ${unit.title}`);
+          res = { status: 'manual', detail: 'can only be done by hand' };
+        } else {
+          try {
+            await goto(unit);
+            if (!arriving) log(`${state.idx + 1}/${units.length} ${unit.title}`);
+            res = await unit.run();
+          } catch (e) {
+            if (e instanceof Abort) throw e;
+            if (e instanceof Renav && (state.renav[unit.id] = (state.renav[unit.id] || 0) + 1) <= 2) await hardNav(unit);
+            if (e instanceof RowMissing && unit.next) { // Facebook may keep this row on another page
+              state.alt[unit.id] = (state.alt[unit.id] || 0) + 1;
+              log('  not on this page, trying the next one');
+              await closeLayers();
+              units = buildUnits(state.opts);
+              continue;
+            }
+            if (e instanceof DryRun) res = { status: 'dry', detail: 'would ' + e.message };
+            else if (e instanceof RowMissing && unit.optional) res = { status: 'info', detail: 'this setting is not shown for your account' };
+            else res = { status: 'manual', detail: e.message, seen: snapshot() };
+          }
         }
         log(`  ${STATUS[res.status].text}${res.detail ? ': ' + res.detail : ''}`);
+        if (res.seen) log(`  the page showed: ${res.seen}`);
         if (!unit.advertisers) { // advertiser steps are timed per advertiser instead
           state.timing.unitMs += Date.now() - (state.unitStart || Date.now());
           state.timing.units++;
         }
         ui.advertisers(null);
-        state.results.push({ id: unit.id, title: unit.title, url: unit.url, manual: unit.manual, status: res.status, detail: res.detail || '' });
+        state.results.push({ id: unit.id, title: unit.title, url: unit.url, manual: unit.manual, status: res.status, detail: res.detail || '', seen: res.seen || '' });
         state.idx++;
         state.navFor = null;
         await save();
@@ -946,6 +1166,7 @@
   // Fields added after 1.0.0, so a run saved by an older version can still be resumed.
   function upgrade(st) {
     st.adv = st.adv || {};
+    st.alt = st.alt || {};
     st.timing = st.timing || { unitMs: 0, units: 0, adv: {} };
     st.records = st.records || [];
     return st;
@@ -964,6 +1185,7 @@
     already: { icon: '☑️', text: 'Already set' },
     dry: { icon: '👁', text: 'Dry run' },
     manual: { icon: '⚠️', text: 'Needs manual check' },
+    info: { icon: 'ℹ️', text: 'Nothing to change' },
   };
 
   function reportText() {
@@ -971,6 +1193,7 @@
     for (const r of state.results) {
       lines.push(`${STATUS[r.status].icon} ${r.title}: ${STATUS[r.status].text}${r.detail ? ' (' + r.detail + ')' : ''}`);
       if (r.status === 'manual') lines.push(`     ${r.manual} ${r.url}`);
+      if (r.seen) lines.push(`     The page showed: ${r.seen}`);
     }
     return lines.join('\n');
   }
@@ -1037,11 +1260,13 @@
     ul { list-style: none; margin: 0; padding: 0; }
     li { padding: 6px 0; border-bottom: 1px solid #e3e6ea; }
     li:last-child { border-bottom: 0; }
-    li div { color: #5b6570; font-size: 12px; }
+    li div, li details { color: #5b6570; font-size: 12px; }
+    li details { word-break: break-word; }
+    summary { cursor: pointer; }
     a { color: #0b5cad; }
     @media (prefers-color-scheme: dark) {
       .panel { background: #1f2328; color: #e6e8eb; border-color: #3a4048; }
-      h3, label.opt em, .sub, li div, .cap { color: #9aa4af; }
+      h3, label.opt em, .sub, li div, li details, .cap { color: #9aa4af; }
       th, td { border-color: #3a4048; }
       button.link { color: #7db8f0; }
       button.b { background: #2c323a; border-color: #454d57; color: #e6e8eb; }
@@ -1215,7 +1440,8 @@
       const items = state.results.map((r) => h('li', { 'data-id': r.id, 'data-status': r.status },
         `${STATUS[r.status].icon} `, h('b', null, r.title),
         h('div', null, STATUS[r.status].text + (r.detail ? ': ' + r.detail : '')),
-        r.status === 'manual' ? h('div', null, r.manual + ' ', h('a', { href: r.url, target: '_blank', rel: 'noopener' }, 'Open page')) : null));
+        r.status === 'manual' ? h('div', null, r.manual + ' ', h('a', { href: r.url, target: '_blank', rel: 'noopener' }, 'Open page')) : null,
+        r.seen ? h('details', null, h('summary', null, 'What the page showed'), r.seen) : null));
       const rows = state.records || [];
       const details = state.opts.saveInfo ? [
         h('h3', null, `Advertiser details (${rows.length})`),

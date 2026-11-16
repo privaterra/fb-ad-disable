@@ -12,7 +12,6 @@ const { pages } = require('./mock/pages');
 const ROOT = path.join(__dirname, '..');
 const SCRIPT = fs.readFileSync(path.join(ROOT, 'fb-ad-disable.js'), 'utf8');
 const LIB = fs.readFileSync(path.join(__dirname, 'mock', 'lib.js'), 'utf8');
-const OFF_META = 'https://accountscenter.facebook.com/info_and_permissions/off_facebook_activity/';
 
 // Serves the mock pages on the real Facebook hostnames. `inject` adds the script
 // to every page, the way a userscript manager would.
@@ -27,14 +26,12 @@ async function mockFacebook(context, { inject = false } = {}) {
     const js = (body) => route.fulfill({ contentType: 'text/javascript; charset=utf-8', body });
     if (p === '/__mock.js') return js(LIB);
     if (p === '/__fbad.js') return js(SCRIPT);
-    // Facebook redirects this address to Accounts Center.
-    const redirect = host === 'www' && p === '/off_facebook_activity';
-    const page = redirect ? `() => location.replace(${JSON.stringify(OFF_META)})` : pages[`${host} ${p}`];
+    const page = pages[`${host} ${p}`];
     return route.fulfill({
       contentType: 'text/html; charset=utf-8',
       body: `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>mock</title></head><body><div id="main"></div>
         <script src="/__mock.js"></script><script>(${page ? page.toString() : '() => {}'})()</script>
-        ${inject && !redirect ? '<script src="/__fbad.js"></script>' : ''}</body></html>`,
+        ${inject ? '<script src="/__fbad.js"></script>' : ''}</body></html>`,
     });
   });
   return events;
@@ -129,20 +126,33 @@ test('userscript mode, Max level: every task runs across both sites', async () =
   assert.equal(events.filter((e) => e.type === 'offfuture').length, 1);
 
   assert.deepEqual(sets(events), {
-    ad_partners: 'No', ad_outside: false, ad_social: 'Only me',
+    ad_partners: 'No', ad_outside: 'Not allowed', ad_social: 'Only me',
     future_posts: 'Only me', past_posts: true, friend_requests: 'Friends of friends', friends_list: 'Only me',
-    lookup_email: 'Only me', search_engines: false, follow: 'Friends', following: 'Only me',
-    public_comments: 'Friends', public_profile_info: 'Friends', post_on_profile: 'Only me', others_posts: 'Only me',
-    tagged_posts: 'Only me', review_tagged: true, review_tags: true,
+    lookup_email: 'No one', search_engines: false, follow: 'Friends', following: 'Only me',
+    public_comments: 'Friends', post_on_profile: 'Only me', others_posts: 'Only me',
+    tagged_posts: 'Only me', review_tagged: true, review_tags: true, share_to_stories: false,
+    ai_summaries: false, reel_ai: false,
   });
-  assert.equal(events.filter((e) => e.type === 'set').length, 18, 'each setting is changed exactly once');
-  assert.equal(events.filter((e) => e.type === 'decoy').length, 0, 'the "Friends" link outside the dialog is never clicked');
+  assert.equal(events.filter((e) => e.type === 'set').length, 20, 'each setting is changed exactly once');
+  assert.deepEqual(events.filter((e) => e.type === 'decoy'), [],
+    'nothing outside the open pop-up is clicked: not the "Friends" link, the off-screen dialog or another row\'s button');
+
+  // A row Facebook moved to another settings page is found there.
+  assert.equal(r.share_to_stories.status, 'changed');
+  // AI: the scan turns off the AI switch only, and what has no switch is listed to do by hand.
+  assert.match(r.ai_scan_reels.text, /turned off: Allow Meta AI to suggest remixes of your reels$/);
+  assert.equal(r.ai_scan_posts.status, 'already');
+  for (const id of ['ai_camera_roll', 'ai_training', 'ai_chats']) assert.equal(r[id].status, 'manual');
+  assert.match(r.ai_training.text, /Open page/);
 
   assert.equal(r.lookup_phone.status, 'already');
-  assert.equal(r.share_to_stories.status, 'manual', 'a setting that is missing from the page is reported, not skipped silently');
-  assert.match(r.share_to_stories.text, /Open page/);
-  const others = Object.entries(r).filter(([id, v]) => v.status !== 'changed' && !['lookup_phone', 'share_to_stories'].includes(id));
-  assert.deepEqual(others, []);
+  assert.equal(r.public_profile_info.status, 'manual', 'a setting that is missing from the page is reported, not skipped silently');
+  assert.match(r.public_profile_info.text, /Open page/);
+  assert.match(r.public_profile_info.text, /What the page showed.*Who Can Follow Me/, 'the report says what was on the page instead');
+  const status = (id) => r[id].status;
+  assert.deepEqual(Object.keys(r).filter((id) => status(id) === 'info').sort(), ['ai_scan_followers', 'ai_scan_stories', 'ai_scan_tagging']);
+  assert.deepEqual(Object.keys(r).filter((id) => !['changed', 'info'].includes(status(id))).sort(),
+    ['ai_camera_roll', 'ai_chats', 'ai_scan_posts', 'ai_training', 'lookup_phone', 'public_profile_info']);
   await context.close();
 });
 
@@ -268,7 +278,7 @@ test('progress bars, advertiser details CSV, saved log and remembered advertiser
   // Issue 2: the log as a file.
   const logFile = await saved(page, 'savelog');
   assert.match(logFile.file, /^fb-ad-disable-log-[\d-]+\.txt$/);
-  assert.match(logFile.text, /^fb-ad-disable 1\.1\.0 log\n/);
+  assert.match(logFile.text, /^fb-ad-disable 1\.2\.0 log\n/);
   assert.match(logFile.text, /Options: \{.*"saveLog":true/);
   assert.match(logFile.text, /\d\d:\d\d:\d\d   5 advertisers found, 5 to process/);
   assert.match(logFile.text, /\d\d:\d\d:\d\d Finished\.\n$/);
@@ -295,6 +305,22 @@ test('progress bars, advertiser details CSV, saved log and remembered advertiser
   await p.locator('button[name="menu"]').click();
   await p.locator('button[name="forget"]').click();
   await p.locator('#known', { hasText: '0 remembered' }).waitFor();
+  await context.close();
+});
+
+test('ad topics: "See all" next to the heading, then "See less" for each topic', async () => {
+  const context = await browser.newContext();
+  const events = await mockFacebook(context, { inject: true });
+  await fakeUserscriptApi(context);
+  const page = await context.newPage();
+  await page.goto('https://accountscenter.facebook.com/ads/');
+  await page.evaluate(() => window.__openMenu());
+  await configureAndStart(page, { tasks: ['adsettings', 'topics'] }); // ad settings first, so the other tab is showing
+  const r = await report(page);
+  assert.equal(r.topics.status, 'changed');
+  assert.deepEqual(events.filter((e) => e.type === 'topic').map((e) => `${e.name}:${e.value}`).sort(),
+    ['Alcohol:See less', 'Parenting:See less', 'Pets:See less']);
+  assert.deepEqual(events.filter((e) => e.type === 'decoy'), []);
   await context.close();
 });
 

@@ -6,6 +6,7 @@ A script for Google Chrome that works through Facebook's own settings pages for 
 - hide the advertisers Facebook lists for you,
 - switch off the ad settings that let Meta use partner data, your profile categories and your activity off Meta,
 - clear (and optionally disconnect) your off-Meta activity,
+- switch off the AI features Facebook lets you switch off,
 - tighten your audience and visibility settings to a level you choose: **Default**, **Moderate** or **Max**.
 
 You pick what to run from a menu, press **Start**, and get a report at the end.
@@ -93,6 +94,9 @@ Each step ends in one of these states:
 | ☑️ Already set | The setting already had the wanted value. |
 | 👁 Dry run | What would be changed. |
 | ⚠️ Needs manual check | The script could not do it. Use the **Open page** link and set the value shown. |
+| ℹ️ Nothing to change | The page has nothing for this step (for example no AI switches). |
+
+When a step fails, the report keeps **What the page showed**: the text and controls that were on screen at that moment, with email addresses and long numbers removed. That is what makes a wrong label fixable, so include it when you report a problem (**Copy report** contains it). It is your own settings page, so read it before sharing.
 
 **Copy report** puts the report on the clipboard. If something fails on your account, the report plus the log are what is needed to fix the labels.
 
@@ -143,7 +147,20 @@ With **Save logs** on, **Copy log** and **Save log** appear during the run and i
 | **Restrict ad data settings** | Ad preferences → Manage info | *Activity information from ad partners* → "No, don't make my ads more relevant…" · *Categories used to reach you* → all off · *Ads shown outside of Meta* → not allowed · *Social interactions* → Only me. |
 | **Clear off-Meta activity history** | Your activity off Meta technologies | **Clear previous activity**. |
 | **Disconnect future off-Meta activity** (off by default; Max ticks it) | same page | *Manage future activity* → **Disconnect future activity**. Side effect: "Log in with Facebook" on other sites and apps stops working. |
-| **Ad topics: See less** (experimental, off by default) | Ad preferences → Ad topics | Opens each topic and picks **See less**. |
+| **Ad topics: See less** (experimental, off by default) | Ad preferences → Customize ads → Ad topics → See all | Opens each topic and picks **See less**. |
+| **Turn off AI features** | Settings → Posts, Stories, Reels, Profile and tagging, Followers and public content | Turns off **Allow comment summaries on your posts** and any other switch on those pages whose label mentions AI. Lists the AI settings that have no switch on the web (see below). |
+
+### AI features: what can and cannot be switched off
+
+Meta gives no single switch for AI, and Meta AI itself (in search and Messenger) cannot be removed. The task does what the web settings allow:
+
+- **Switched off automatically:** *Allow comment summaries on your posts*, and every switch on the scanned settings pages whose label contains "AI", "Meta AI", "comment summaries" or "cloud processing". A switch whose label already describes a restriction (it starts with "Hide", "Block", "Limit" and similar) is left alone. The report names each switch that was turned off.
+- **Listed in the report to do by hand**, because there is nothing to click on the web:
+  - *Camera roll cloud processing*: Facebook phone app → Settings → **Camera roll sharing suggestions** → both options off.
+  - *Use of your information to train Meta AI*: no switch exists. Where your region allows it, the Privacy Center page on generative AI links to the objection form.
+  - *Meta AI chats and memory*: delete them in Meta AI's own settings; you can mute the Meta AI chat in Messenger.
+- Instagram, WhatsApp and Messenger have their own settings and are outside this script, which only runs on facebook.com.
+- If Facebook does not show the comment summaries setting for your account, the report says "Nothing to change".
 
 ## Privacy levels
 
@@ -155,8 +172,8 @@ With **Save logs** on, **Copy log** and **Save log** appear during the run and i
 | Limit who can see past posts | Limited to Friends | Limited to Friends |
 | Who can send you friend requests | Friends of friends | Friends of friends |
 | Who can see your friends list | Friends | Only me |
-| Who can look you up by email address | Friends | Only me |
-| Who can look you up by phone number | Friends | Only me |
+| Who can look you up by email address ("People with your email address") | Friends | No one |
+| Who can look you up by phone number ("People with your phone number") | Friends | No one |
 | Search engines outside Facebook link to your profile | Off | Off |
 | Who can follow you | Friends | Friends |
 | Who can see the people, Pages and lists you follow | Friends | Only me |
@@ -178,17 +195,24 @@ Where Facebook offers nothing stricter than Friends (followers, public comments)
 - It does not touch Messenger active status, location settings in the mobile apps, or apps and websites connected to your account (Settings → Apps and websites). Do those by hand.
 - New advertisers appear over time. Run the advertiser tasks again every few months.
 
+## Beyond Facebook's settings
+
+- **Find where your photos appear.** Run your profile and cover photos through a reverse image search such as [TinEye](https://tineye.com) or Google Lens to see where else they have been copied.
+- **Ask data brokers to delete your record.** Facebook's settings only control use on Meta; the broker still holds the data until you ask it to delete it.
+- **Review connected apps.** Settings → Apps and websites lists the services that can still read your Facebook data.
+
 ## How well tested is it
 
 - The engine (menu, page navigation and resume, text matching, dry run, progress bars, remembered advertisers, CSV and log export, reporting, the three run modes) is covered by automated tests that drive the real script in Chromium against mock Facebook pages: `npm test`.
 - The advertiser-list flow keeps the click sequence of the original console script this project started from.
-- No flow has been verified end to end on a live account by the automated tests: they cannot log in to Facebook. The setting names come from Facebook's documented labels. That is why every step is reported and why you should start with a dry run.
+- The automated tests cannot log in to Facebook, so no flow is verified end to end on a live account by them. The setting names come from Meta's help pages and from failure reports of real runs; version 1.2.0 reworked the eleven steps that a live run reported as failing, and those changes are not yet confirmed on a live account. That is why every step is reported and why you should start with a dry run.
 
 A safety rule that is tested: an option such as "Friends" or "Only me" is only ever clicked inside a dialog, menu or radio group, never elsewhere on the page.
 
 ## Troubleshooting
 
-- **Reporting a problem.** Run again with **Save logs** ticked and attach the saved log file.
+- **Reporting a problem.** Use **Copy report** and paste it; for more detail run again with **Save logs** ticked and attach the saved log file. Both contain "what the page showed" for each failed step.
+- **A row has moved.** Facebook moves settings between pages. For rows known to move, the script tries the next settings page by itself (the log says "not on this page, trying the next one").
 - **Many steps say "Needs manual check".** Check Facebook is in English (US), try *Slow* speed, and run again; finished steps are quick the second time because they report "Already set".
 - **The panel vanished (console mode).** The page reloaded. Run the script again and it resumes.
 - **A label changed.** Labels live in three tables at the top of `fb-ad-disable.js`: `L` (shared buttons), `AD_SETTINGS` and `PRIVACY`. Each `row` entry is a list of lower-case text fragments; add the new wording next to the old one.
