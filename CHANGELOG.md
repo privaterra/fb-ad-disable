@@ -3,6 +3,13 @@
 Notable changes to this project. Versions follow [semantic versioning](https://semver.org/).
 Each release on GitHub carries the section for its version.
 
+## [Unreleased]
+
+Changes on the `dev` branch that are not in a release yet.
+
+- Links to files of this repository in release notes are written as full addresses, so they work on the release page.
+- The project now has two branches: `main` holds the released code, `dev` the next version. Releases are published from `main` only.
+
 ## [1.5.0] - 2026-11-16
 
 First public release.

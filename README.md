@@ -281,7 +281,23 @@ sha256sum -c SHA256SUMS.txt
 
 A release is built from a tagged commit by the Release workflow, after the tests and `npm audit` pass. Nothing is added to the files beyond what is in this repository.
 
-To publish one: set the version in `package.json`, `package-lock.json`, `manifest.json` and the two places in `fb-ad-disable.js`, add its section to `CHANGELOG.md`, push, then run **Release** from the Actions tab. The workflow checks that the version matches everywhere, refuses a version that is already released, and creates the tag and the release.
+### Branches
+
+| Branch | Holds |
+| --- | --- |
+| `main` | The released code. What you get when you clone the repository, and the only branch releases are published from. |
+| `dev` | The next version, while it is being put together. It can be ahead of the latest release and is not guaranteed to work. |
+
+Changes go to `dev`, directly or through a pull request. CI, `npm audit` and CodeQL run on every push to either branch, and Dependabot proposes its updates against `dev`. To try the next version before it is released, clone `dev` and load it unpacked.
+
+### Publishing a release
+
+1. On `dev`, set the new version in `package.json`, `package-lock.json`, `manifest.json` and the two places in `fb-ad-disable.js`.
+2. In `CHANGELOG.md`, turn the **Unreleased** section into the section for that version.
+3. Open a pull request from `dev` into `main` and merge it once CI passes.
+4. Run **Release** from the Actions tab, on `main`.
+
+The workflow checks that the version matches everywhere, refuses a version that is already released, refuses to publish from any branch but `main`, and creates the tag and the release.
 
 ## Development
 
