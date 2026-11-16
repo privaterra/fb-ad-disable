@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FB Ad Disable & Privacy Hardener
 // @namespace    https://github.com/privaterra/fb-ad-disable
-// @version      1.3.0
+// @version      1.4.0
 // @description  Opt out of advertiser lists, restrict ad data use and tighten Facebook privacy settings from one menu.
 // @license      MIT
 // @match        https://www.facebook.com/*
@@ -30,10 +30,11 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.3.0';
+  const VERSION = '1.4.0';
   const TAG = '[fb-ad-disable]';
   const KEY = 'fbAdDisableState';
   const MEMORY_KEY = 'fbAdDisableAdvertisers';
+  const HISTORY_KEY = 'fbAdDisableHistory';
 
   if (window.top !== window) return;
   if (window.__fbAdDisable) { window.__fbAdDisable.open(); return; }
@@ -77,9 +78,9 @@
   // What the script can do
   // ---------------------------------------------------------------------------
   const TASKS = [
-    { id: 'lists', on: true, label: 'Disable list-based advertisers',
+    { id: 'lists', on: true, heavy: true, label: 'Disable list-based advertisers',
       hint: 'Advertisers and data brokers that uploaded a contact list containing your details: stop them using it to show you ads or exclude you.' },
-    { id: 'seen', on: true, label: 'Hide advertisers you have seen',
+    { id: 'seen', on: true, heavy: true, label: 'Hide advertisers you have seen',
       hint: 'Clicks “Hide ads” for every advertiser Facebook lists for you.' },
     { id: 'adsettings', on: true, label: 'Restrict ad data settings',
       hint: 'Activity from ad partners: not used · profile categories: off · ads outside Meta: off · social interactions: Only me.' },
@@ -87,7 +88,7 @@
       hint: 'Disconnects the activity other companies and websites have already sent to Meta about you.' },
     { id: 'offfuture', on: false, label: 'Disconnect future off-Meta activity',
       hint: 'Stops new off-Meta activity being linked to your account. Side effect: “Log in with Facebook” on other sites stops working.' },
-    { id: 'topics', on: false, label: 'Ad topics: “See less” (experimental)',
+    { id: 'topics', on: false, heavy: true, label: 'Ad topics: “See less” (experimental)',
       hint: 'Walks the ad topics list and picks “See less” for each one.' },
     { id: 'ai', on: true, label: 'Turn off AI features',
       hint: 'Switches off the AI settings Facebook offers on the web (comment summaries and any AI switch found in settings) and lists the ones you have to change by hand. Meta AI itself cannot be removed.' },
@@ -113,7 +114,7 @@
     { id: 'ad_partners', title: 'Activity from other businesses (ad partners)', url: ADS, tab: AD_TAB,
       row: ['activity from other businesses', 'activity information from ad partners'],
       already: ['not using this information'], steps: [['review setting', 'review settings']],
-      all: ["no, don't make my ads more relevant*", "don't use*", 'not using*', "no, don't use*"], confirm: ['confirm', 'save', 'done'],
+      all: ["don't allow us to use*", "no, don't make my ads more relevant*", "don't use*", 'not using*', "no, don't use*"], confirm: ['confirm', 'save', 'done'],
       say: 'not using this information' },
     { id: 'ad_categories', title: 'Categories used to reach you', url: ADS, tab: AD_TAB,
       row: ['categories used to reach you'], custom: 'adCategories', all: true,
@@ -248,6 +249,11 @@
   let busy = false;
 
   const save = async () => { state.savedAt = Date.now(); await store.set(state); };
+
+  // Facebook answers with these when it will not serve a page for now. One cause is rate
+  // limiting: too many of its pages opened in a short time.
+  const LIMITED = /something went wrong|try again later|page isn['’]t available right now/i;
+  const LIMIT_NOTE = 'This can be Facebook rate limiting, after many of its pages were opened in a short time. Wait a few hours before running this task again';
 
   class Abort extends Error {}
   class DryRun extends Error {}
@@ -915,6 +921,7 @@
         tally.failed++;
         rec.result = 'failed';
         rec.error = out.error.message;
+        if (out.error instanceof Broken) ls.limited = true; // Facebook's error page: possibly rate limiting
         state.listsSeen = state.listsSeen || snapshot();
       } else {
         ls.ok++;
@@ -955,7 +962,7 @@
       // Nothing recognised on any advertiser page means the labels are wrong, not that all is well.
       const lost = tally.failed + tally.bare > 0 && tally.changed + tally.none + tally.dry === 0;
       const status = lost ? 'manual' : o.dryRun ? 'dry' : tally.changed ? 'changed' : 'already';
-      return { status, detail, seen: tally.failed + tally.bare ? state.listsSeen : '' };
+      return { status, detail, seen: tally.failed + tally.bare ? state.listsSeen : '', limited: !!ls.limited };
     };
 
     // ---- direct: every advertiser's page is loaded by its address -----------------------------
@@ -1097,6 +1104,8 @@
       if (out.error instanceof Broken && !ls.ok) {
         // The error page before any advertiser has opened properly: the way of opening is at fault,
         // not this advertiser. It is not booked; it is tried again the next way.
+        ls.limited = true;
+        if (!ls.told) { ls.told = true; log(`  ${NOT_SHOWN}. ${LIMIT_NOTE}; the script first tries opening advertisers another way.`); }
         if (++ls.bad >= 2) {
           ls.bad = 0;
           ls.way = ls.way === 'click' ? 'press' : 'direct';
@@ -1137,11 +1146,35 @@
 
     await waitFor(() => items().length, 8000, 'a list on this page');
     const total = () => new Set([...done, ...items().map(keyOf)]).size;
-    each(null, null, done.size, total());
+    const most = () => (state[doneKey + 'Total'] = Math.max(state[doneKey + 'Total'] || 0, total()));
+    // More entries: a "See more" in the pop-up, or the end of a list that loads as it scrolls.
+    const more = async () => {
+      if (!topLayer()) return false;
+      const btns = searchText(scope(), [...t('seeMore'), ...t('seeAll')], 'exact');
+      if (btns.length) { btns.forEach(click); await settle(); }
+      const list = items();
+      if (list.length) { try { list[list.length - 1].scrollIntoView({ block: 'end' }); } catch (e) { /* ignore */ } await settle(); }
+      return items().some((x) => !done.has(keyOf(x)));
+    };
+    let note = '';
+    each(null, null, done.size, most());
     while (fails < 3 && done.size < 1000) {
       check();
+      most();
       const el = items().find((x) => !done.has(keyOf(x)));
-      if (!el) break;
+      if (!el) {
+        if (await more()) continue;
+        // Facebook sometimes redraws the list with fewer entries after a change. Load it afresh,
+        // as long as each fresh load gets further; after that, say how many were left.
+        const missing = (state[doneKey + 'Total'] || 0) - done.size;
+        if (missing > 0) {
+          const stall = state[doneKey + 'Stall'] || (state[doneKey + 'Stall'] = { at: -1, n: 0 });
+          if (done.size > stall.at) { stall.at = done.size; stall.n = 0; }
+          if (++stall.n <= 2) { await save(); throw new Renav('the list stopped showing its remaining entries', done.size); }
+          note = `, ${missing} more were listed at first but are no longer shown: run this task again`;
+        }
+        break;
+      }
       const key = keyOf(el);
       const name = firstText(el);
       const size = total();
@@ -1181,7 +1214,7 @@
       e.seen = seen;
       throw e;
     }
-    const failed = count.failed ? `, ${count.failed} could not be handled` : '';
+    const failed = (count.failed ? `, ${count.failed} could not be handled` : '') + note;
     if (state.opts.dryRun) return { status: 'dry', detail: said.dry(count) + failed, seen };
     return { status: count.changed ? 'changed' : 'already', detail: said.done(count) + failed, seen };
   }
@@ -1301,8 +1334,24 @@
     ['your activity off meta technologies', 'activity off meta', 'off-meta activity', 'off-facebook activity'],
     ['activity from other businesses']]; // what Meta is folding it into
 
+  // "Activity from other businesses" replaced the off-Meta activity page on many accounts. It
+  // has no history to clear and nothing to disconnect: one choice, whether Meta may use what
+  // other businesses send it about you.
+  const OTHER_BUSINESSES = ["don't allow us to use*", "don't use*", 'not using*'];
+  const REPLACED = 'Meta replaced off-Meta activity with “Activity from other businesses”';
+  const replacement = () => findOption(OTHER_BUSINESSES, 'exact')[0];
+
   async function runOffClear() {
-    const row = await reach(['clear previous activity', 'clear history', 'clear activity', 'disconnect previous activity'], OFF_META_PATH, '“Clear previous activity”');
+    let row;
+    try {
+      row = await reach(['clear previous activity', 'clear history', 'clear activity', 'disconnect previous activity'], OFF_META_PATH, '“Clear previous activity”');
+    } catch (e) {
+      const now = replacement();
+      if (!(e instanceof RowMissing) || !now) throw e;
+      const chosen = checkedState(now) === true;
+      return { status: 'info', detail: `${REPLACED}, which keeps no history to clear. ` +
+        (chosen ? `It is set to “${say(now)}”` : `“${say(now)}” is not selected there yet: the “Disconnect future off-Meta activity” task selects it`) };
+    }
     if (!(await openRow(row))) throw new Error('the confirmation did not open');
     const btn = findText(['clear previous activity', 'clear history', 'clear']).filter((el) => el !== row).pop();
     if (!btn) throw new Error('the “Clear” button was not found');
@@ -1312,7 +1361,15 @@
   }
 
   async function runOffFuture() {
-    const row = await reach(['manage future activity', 'disconnect future activity', 'future activity'], OFF_META_PATH, '“Manage future activity”');
+    let row;
+    try {
+      row = await reach(['manage future activity', 'disconnect future activity', 'future activity'], OFF_META_PATH, '“Manage future activity”');
+    } catch (e) {
+      if (!(e instanceof RowMissing) || !replacement()) throw e;
+      const picked = await choose(OTHER_BUSINESSES); // the choice that takes its place
+      if (picked.status === 'changed') await confirmIf(['confirm', 'save', 'done']);
+      return { status: picked.status, detail: `${REPLACED}: ${picked.detail}` };
+    }
     await openRow(row);
     const again = findText(['manage future activity']).filter((el) => el !== row).pop(); // explainer screen
     if (again) await openRow(again);
@@ -1385,7 +1442,13 @@
       if (!label) continue;
       found++;
       const holder = label.closest('[role="button"],[role="link"],[role="listitem"]') || label.parentElement;
-      const status = norm(holder.textContent).replace(field, '').trim();
+      const parts = []; // "Unspecified", "Not used": the pieces of text next to the label
+      const walker = document.createTreeWalker(holder, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const piece = norm(n.nodeValue);
+        if (piece && piece !== field && !parts.includes(piece)) parts.push(piece);
+      }
+      const status = parts.join(', ');
       if (OFF.some((x) => status.includes(x))) { notes.push(`${field}: ${status}`); continue; }
       // In use, or the row does not say: open it and switch it off.
       await openRow(label);
@@ -1446,6 +1509,9 @@
       for (const item of AI_BY_HAND) units.push({ ...item, byHand: true });
     }
     if (o.level !== 'default') for (const s of PRIVACY) if (s[o.level] !== undefined) units.push(setting(s, s[o.level]));
+    // The menu section a step belongs to, for the "last run" notes.
+    const own = ['lists', 'seen', 'topics', 'offclear', 'offfuture'];
+    for (const u of units) u.task = own.includes(u.id) ? u.id : u.id.startsWith('ai_') ? 'ai' : u.id.startsWith('ad_') ? 'adsettings' : 'privacy';
     return units;
   }
 
@@ -1512,24 +1578,29 @@
         }
         log(`  ${STATUS[res.status].text}${res.detail ? ': ' + res.detail : ''}`);
         if (res.seen) log(`  the page showed: ${res.seen}`);
+        // Facebook's "try again later" pages, wherever they turned up in this step.
+        res.limited = res.status !== 'info' && (!!res.limited || LIMITED.test(`${res.detail || ''} ${res.seen || ''}`));
+        if (res.limited) log(`  ${LIMIT_NOTE}.`);
         if (!unit.advertisers) { // advertiser steps are timed per advertiser instead
           state.timing.unitMs += Date.now() - (state.unitStart || Date.now());
           state.timing.units++;
         }
         ui.advertisers(null);
-        state.results.push({ id: unit.id, title: unit.title, url: unit.url, manual: unit.manual, status: res.status, detail: res.detail || '', seen: res.seen || '' });
+        state.results.push({ id: unit.id, task: unit.task, title: unit.title, url: unit.url, manual: unit.manual, status: res.status,
+          detail: res.detail || '', seen: res.seen || '', limited: !!res.limited });
         state.idx++;
         state.navFor = null;
         await save();
         await closeLayers().catch((e) => { if (e instanceof Abort) throw e; });
       }
       log('Finished.');
+      state.finished = true;
     } catch (e) {
       if (!(e instanceof Abort)) { log('Stopped by an unexpected error: ' + e.message); console.error(TAG, e); } else log('Stopped.');
       const unit = units[state.idx];
       if (unit) { // the report says where the run was cut short, with the advertiser counts so far
         const sofar = unit.advertisers && state.adv[unit.id] ? ` (${state.adv[unit.id].done} of ${state.adv[unit.id].total} advertisers looked at)` : '';
-        state.results.push({ id: unit.id, title: unit.title, url: unit.url, manual: unit.manual, status: 'manual',
+        state.results.push({ id: unit.id, task: unit.task, title: unit.title, url: unit.url, manual: unit.manual, status: 'manual',
           detail: `stopped before this step finished${sofar}`, seen: unit.id === 'lists' ? state.listsSeen || '' : '' });
       }
     }
@@ -1537,7 +1608,30 @@
     state.navFor = null;
     busy = false;
     await save();
+    await saveHistory().catch((e) => console.error(TAG, e));
     ui.showReport();
+  }
+
+  // When each section was last run and how it went, kept in this browser for the menu.
+  async function saveHistory() {
+    const hist = (await durable.get(HISTORY_KEY)) || { tasks: {} };
+    const now = Date.now();
+    const groups = {};
+    for (const r of state.results) (groups[r.task || 'privacy'] = groups[r.task || 'privacy'] || []).push(r);
+    const WORDS = [['changed', 'changed'], ['dry', 'would change'], ['already', 'already set'], ['manual', 'need a manual check'], ['info', 'nothing to do']];
+    for (const [task, rs] of Object.entries(groups)) {
+      const n = (st) => rs.filter((r) => r.status === st).length;
+      hist.tasks[task] = {
+        at: now,
+        dryRun: !!state.opts.dryRun,
+        level: task === 'privacy' ? state.opts.level : '',
+        limited: rs.some((r) => r.limited),
+        note: rs.length === 1 ? `${STATUS[rs[0].status].text}${rs[0].detail ? ': ' + clip(rs[0].detail, 140) : ''}`
+          : WORDS.filter(([st]) => n(st)).map(([st, word]) => `${n(st)} ${word}`).join(', '),
+      };
+    }
+    hist.last = { at: now, dryRun: !!state.opts.dryRun, finished: !!state.finished, version: VERSION };
+    await durable.set(HISTORY_KEY, hist);
   }
 
   async function start(opts) {
@@ -1579,7 +1673,7 @@
       log(`The page reloaded during step ${state.idx + 1}; ${n > 2 ? 'skipping it' : 'trying it again'}.`);
       if (n > 2) { // do not loop on a step that reloads the page every time
         const unit = buildUnits(state.opts)[state.idx];
-        if (unit) state.results.push({ id: unit.id, title: unit.title, url: unit.url, manual: unit.manual, status: 'manual', detail: 'the page kept reloading', seen: '' });
+        if (unit) state.results.push({ id: unit.id, task: unit.task, title: unit.title, url: unit.url, manual: unit.manual, status: 'manual', detail: 'the page kept reloading', seen: '' });
         state.idx++;
       }
       state.navFor = null;
@@ -1604,6 +1698,7 @@
     for (const r of state.results) {
       lines.push(`${STATUS[r.status].icon} ${r.title}: ${STATUS[r.status].text}${r.detail ? ' (' + r.detail + ')' : ''}`);
       if (r.status === 'manual') lines.push(`     ${r.manual} ${r.url}`);
+      if (r.limited) lines.push(`     ${LIMIT_NOTE}.`);
       if (r.seen) lines.push(`     The page showed: ${r.seen}`);
     }
     return lines.join('\n');
@@ -1648,6 +1743,9 @@
     label.opt input { margin: 2px 0 0; }
     label.opt > span { font-weight: 600; }
     label.opt em { grid-column: 2; font-style: normal; color: #5b6570; font-size: 12px; }
+    .last { color: #2f6ea3 !important; }
+    .last:empty { display: none; }
+    .warn { display: block; color: #b3261e !important; font-weight: 600; }
     .row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
     select { font: inherit; padding: 3px 6px; }
     .btns { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
@@ -1684,6 +1782,8 @@
       th, td { border-color: #3a4048; }
       th { background: #1f2328; }
       button.link { color: #7db8f0; }
+      .last { color: #7db8f0 !important; }
+      .warn { color: #ff8a80 !important; }
       button.b { background: #2c323a; border-color: #454d57; color: #e6e8eb; }
       button.b.primary { background: #2f6ea3; border-color: #2f6ea3; }
       pre { background: #15181c; color: #d5d9de; }
@@ -1756,11 +1856,34 @@
       const pref = (key, fallback) => (saved && saved[key] !== undefined ? saved[key] : fallback);
       const option = (name, on, label, ...hint) => h('label', { class: 'opt' },
         h('input', { type: 'checkbox', name, checked: !!on }), h('span', null, label), h('em', null, hint));
+      const HEAVY = ' Opens many Facebook pages in a row: run too often, Facebook may answer “Something went wrong” for a while (rate limiting).';
       const taskBoxes = TASKS.map((task) => {
         const input = h('input', { type: 'checkbox', name: 'task', value: task.id,
           checked: saved ? saved.tasks.includes(task.id) : task.on });
-        return h('label', { class: 'opt' }, input, h('span', null, task.label), h('em', null, task.hint));
+        return h('label', { class: 'opt' }, input, h('span', null, task.label), h('em', null, task.hint + (task.heavy ? HEAVY : '')),
+          h('em', { class: 'last', 'data-last': task.id }));
       });
+      // When this browser last ran the script, and how each section went then.
+      const ago = (at) => {
+        const m = Math.round((Date.now() - at) / 60e3);
+        return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 48 * 60 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`;
+      };
+      const when = (at) => `${new Date(at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })} (${ago(at)})`;
+      const lastRun = h('div', { class: 'sub', id: 'lastrun' });
+      const showHistory = async () => {
+        const hist = await durable.get(HISTORY_KEY);
+        if (!hist || !hist.last) { lastRun.textContent = 'Not run in this browser yet.'; return; }
+        lastRun.textContent = `Last run: ${when(hist.last.at)}${hist.last.dryRun ? ', dry run' : ''}${hist.last.finished ? '' : ', stopped early'}`;
+        for (const el of body.querySelectorAll('[data-last]')) {
+          const was = hist.tasks[el.dataset.last];
+          if (!was) continue;
+          el.replaceChildren(...[
+            was.limited ? h('b', { class: 'warn' }, `⚠ Facebook showed an error page here ${ago(was.at)} (“Something went wrong” or similar). That can be rate limiting: wait a few hours before running this again.`) : null,
+            `Last run ${when(was.at)}${was.dryRun ? ', dry run' : ''}${was.level ? `, level ${was.level}` : ''}: ${was.note}`,
+          ].filter(Boolean));
+        }
+      };
+      showHistory();
       const level = saved ? saved.level : 'default';
       const levelBoxes = LEVELS.map((lv) => h('label', { class: 'opt' },
         h('input', { type: 'radio', name: 'level', value: lv.id, checked: lv.id === level,
@@ -1793,8 +1916,9 @@
       fill(
         unfinished ? h('div', { class: 'note' }, `An unfinished run was found (step ${state.idx + 1}). `,
           h('div', { class: 'btns' }, h('button', { class: 'b primary', name: 'resume', onclick: resume }, 'Resume it'))) : null,
+        lastRun,
         h('h3', null, 'Advertisers and ad data'), taskBoxes,
-        h('h3', null, 'Privacy settings level'), levelBoxes,
+        h('h3', null, 'Privacy settings level'), h('div', { class: 'sub last', 'data-last': 'privacy' }), levelBoxes,
         h('h3', null, 'Options'),
         option('dry', pref('dryRun', false), 'Dry run', 'Visit every page and report what would change, without changing anything.'),
         option('remember', pref('remember', true), 'Remember processed advertisers',
@@ -1875,6 +1999,7 @@
         `${STATUS[r.status].icon} `, h('b', null, r.title),
         h('div', null, STATUS[r.status].text + (r.detail ? ': ' + r.detail : '')),
         r.status === 'manual' ? h('div', null, r.manual + ' ', h('a', { href: r.url, target: '_blank', rel: 'noopener' }, 'Open page')) : null,
+        r.limited ? h('div', { class: 'warn' }, `${LIMIT_NOTE}.`) : null,
         r.seen ? h('details', null, h('summary', null, 'What the page showed'), r.seen) : null));
       const rows = state.records || [];
       // The advertiser table is always shown; exporting it with the full details is the option.

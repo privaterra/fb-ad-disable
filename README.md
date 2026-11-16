@@ -75,6 +75,18 @@ Console mode is fine for a single task such as *Disable list-based advertisers*,
 | **Save logs** (off) | Keep the full log and add **Copy log** and **Save log** buttons. |
 | **Speed** | Pause between clicks. Use *Slow* if steps fail on a slow connection. |
 
+### Last run and rate limiting
+
+The top of the menu says when the script last ran in this browser. Under each section it says when that section last ran and how it went, for example "Last run Nov 16, 10:23 PM (2 h ago): Changed: 4 advertisers hidden, 1 already hidden".
+
+Facebook limits how fast its pages can be opened. When it has had enough it answers with "Something went wrong. Please try again later." or "This page isn't available right now" instead of the page, sometimes for hours. The script cannot tell that apart from a fault on Facebook's side, so it reports it as a possibility:
+
+- The three tasks that open one page per advertiser or topic (**Disable list-based advertisers**, **Hide advertisers you have seen**, **Ad topics**) say so in the menu, because they are the ones that can trigger it.
+- A section that met one of those error pages on its last run shows a red warning in the menu with how long ago it was. Leave it a few hours before running that section again; the other sections are not affected.
+- The log and the report say "This can be Facebook rate limiting…" on the step where it happened.
+
+This history is kept in this browser only, next to the remembered advertisers.
+
 ### While it runs
 
 <img src="docs/progress.png" alt="Progress bars and time left during a run" width="372">
@@ -148,7 +160,7 @@ With **Save logs** on, **Copy log** and **Save log** appear during the run and i
 | Task | Where | What happens |
 | --- | --- | --- |
 | **Disable list-based advertisers** | Accounts Center → Ad preferences → Manage info → Audience-based advertising | For every advertiser: open it → *They uploaded or used a list to reach you* → **Don't allow**, for both showing you ads and excluding you from ads. This is the original script this project grew from. See the note below. |
-| **Hide advertisers you have seen** | Ad preferences → Advertisers you saw ads from | Opens each advertiser in the list and clicks **Hide ads**. Advertisers the list marks "You hid their ads" are counted as already hidden and left alone. |
+| **Hide advertisers you have seen** | Ad preferences → Advertisers you saw ads from | Opens each advertiser in the list and clicks **Hide ads**. Advertisers the list marks "You hid their ads" are counted as already hidden and left alone. After a hide Facebook can redraw the list with fewer entries; the script then loads the list afresh and carries on, and says so if entries are still missing at the end. |
 | **Restrict ad data settings** | Ad preferences → Manage info | *Activity from other businesses* (formerly "Activity information from ad partners") → not using this information · *Categories used to reach you* → employer, job title, education and relationship status set to not used, other categories removed · *Ads in other apps* (under "Ads shown outside of Meta") → not showing · *Ads about Meta* → not using your activity · *Social interactions* → Only me. A row that already says so ("Not using this information") is left untouched. |
 | **Clear off-Meta activity history** | Accounts Center → Your information and permissions → Your activity off Meta technologies | **Clear previous activity**. See the note below. |
 | **Disconnect future off-Meta activity** (off by default; Max ticks it) | same page | *Manage future activity* → **Disconnect future activity**. Side effect: "Log in with Facebook" on other sites and apps stops working. See the note below. |
@@ -169,7 +181,7 @@ The list itself can fail the same way: Facebook sometimes shows "Something went 
 
 ### Off-Meta activity is being retired
 
-Meta has been removing "Your activity off Meta technologies" for accounts in the US and other countries since mid-2026 and folding it into **Activity from other businesses**. On such an account the old page says "This content isn't available right now". The two off-Meta tasks then look inside **Activity from other businesses** for something to clear or disconnect, and when there is nothing they report "Nothing to do", say why, and record what that page showed. The setting that replaces them is covered by **Restrict ad data settings**. Where the old setting still exists, the tasks work as described.
+Meta has been removing "Your activity off Meta technologies" for accounts in the US and other countries since mid-2026 and folding it into **Activity from other businesses**. On such an account the old page says "This content isn't available right now", and **Activity from other businesses** (Accounts Center → Your information and permissions) is a single choice with no history to clear. The two off-Meta tasks handle that: *Clear off-Meta activity history* reports that there is nothing to clear and what the choice is set to, and *Disconnect future off-Meta activity* selects "Don't allow us to use this activity to show you relevant content" and confirms, or reports it as already set. The setting that replaces them is covered by **Restrict ad data settings**. Where the old setting still exists, the tasks work as described.
 
 ### AI features: what can and cannot be switched off
 

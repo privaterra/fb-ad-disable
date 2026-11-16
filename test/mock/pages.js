@@ -71,33 +71,42 @@ const pages = {
       m.el('div', { style: 'display:flex;justify-content:space-between' }, m.el('h2', null, m.span('Ad topics')),
         m.el('div', { role: 'button', onclick: () => m.rec('decoy', { what: 'See all on the page behind the pop-up' }) }, m.span('See all'))));
     // An advertiser's panel says who they are; its button is "Hide ads", or "Unhide" once hidden.
-    const advertiser = ([name, category, followers, site, hidden]) => {
-      const note = m.span(hidden ? 'You hid their ads' : '');
+    // Which advertisers are hidden survives a reload. After a hide, the list is redrawn with
+    // only the hidden ones until the page is loaded again, as seen on the real site.
+    const DATA = [['Acme', 'Retail company', '1,234 followers', 'http://acme.example/'],
+      ['Globex', 'Energy company', '56,789 followers', 'http://globex.example/'],
+      ['Initech', 'Software company', '321 followers', 'http://initech.example/'],
+      ['Umbrella', 'Pharmaceutical company', '9,001 followers', 'http://umbrella.example/'],
+      ['Hooli', 'Internet company', '3,231,099 followers', 'http://hooli.example/']];
+    const hiddenNames = () => JSON.parse(sessionStorage.getItem('mock:hidden') || '["Hooli"]');
+    const box = m.el('div');
+    let shrunk = false;
+    const advertiser = ([name, category, followers, site]) => {
+      const hidden = () => hiddenNames().includes(name);
       return m.el('div', { role: 'button', tabindex: '0', onclick: () => {
-        const status = m.el('div', { role: 'listitem' }, m.span(hidden ? 'You chose to hide all ads from this advertiser.' : ''));
-        const btn = m.button(hidden ? 'Unhide' : 'Hide ads', () => {
+        const status = m.el('div', { role: 'listitem' }, m.span(hidden() ? 'You chose to hide all ads from this advertiser.' : ''));
+        const btn = m.button(hidden() ? 'Unhide' : 'Hide ads', () => {
           if (btn.textContent !== 'Hide ads') return m.rec('decoy', { what: 'Unhide clicked' });
           m.rec('hide', { name });
-          hidden = true;
-          note.textContent = 'You hid their ads';
+          sessionStorage.setItem('mock:hidden', JSON.stringify([...hiddenNames(), name]));
           status.firstChild.textContent = 'You chose to hide all ads from this advertiser.';
           btn.querySelector('span').textContent = 'Unhide';
+          shrunk = true;
+          render();
         });
         m.dialog(name, 'Back',
           m.el('div', { role: 'listitem' }, m.span(category)), m.el('div', { role: 'listitem' }, m.span('We make things for ' + name)),
           m.button('Facebook Page', () => {}), m.button(followers, () => {}), m.button('Website', () => {}), m.button(site, () => {}),
           m.el('div', { role: 'listitem' }, m.span('Ads from this advertiser')), status, btn);
-      } }, m.span(name), note);
+      } }, m.span(name), m.span(hidden() ? 'You hid their ads' : ''));
     };
+    const render = () => box.replaceChildren(...DATA.filter((d) => !shrunk || hiddenNames().includes(d[0])).map(advertiser));
+    render();
     m.dialog('Advertisers you saw ads from', 'Close',
       m.el('p', null, m.span('View and hide ads from advertisers you saw ads from.')),
       m.el('div', { role: 'button', onclick: () => m.rec('decoy', { what: 'filter' }) }, m.span('All advertisers')),
       m.el('div', { role: 'button', onclick: () => m.rec('decoy', { what: 'filter' }) }, m.span('All accounts')),
-      [['Acme', 'Retail company', '1,234 followers', 'http://acme.example/'],
-        ['Globex', 'Energy company', '56,789 followers', 'http://globex.example/'],
-        ['Initech', 'Software company', '321 followers', 'http://initech.example/'],
-        ['Umbrella', 'Pharmaceutical company', '9,001 followers', 'http://umbrella.example/'],
-        ['Hooli', 'Internet company', '3,231,099 followers', 'http://hooli.example/', true]].map(advertiser));
+      box);
   },
 
   // ---- accountscenter: off-Meta activity --------------------------------
@@ -108,8 +117,22 @@ const pages = {
     m.main().append(...[m.el('h1', null, m.span('Your information and permissions')),
       m.button('Export your information', () => {}),
       m.button('Activity from other businesses', () => m.dialog('Activity from other businesses', 'Back',
-        window.__flags.offMeta ? offMeta() : m.el('p', null, m.span('Choose whether we use this activity to show you relevant content.')))),
+        window.__flags.offMeta ? offMeta() : otherBusinesses())),
       m.button('App connections', () => {})]);
+    // What replaced it: one choice and "Confirm". Nothing to clear, nothing to disconnect.
+    const otherBusinesses = () => {
+      const ALLOW = 'Allow us to use this activity to show you content that\u2019s more relevant';
+      const DENY = 'Don\u2019t allow us to use this activity to show you relevant content';
+      let picked = sessionStorage.getItem('mock:other') === 'off' ? DENY : ALLOW;
+      return m.el('div', null,
+        m.el('p', null, m.span('Choose if we use your activity sent from other businesses or organizations.')),
+        m.radios([ALLOW, DENY], picked, (o) => { picked = o; }),
+        m.button('Confirm', () => {
+          sessionStorage.setItem('mock:other', picked === DENY ? 'off' : 'on');
+          m.rec('set', { id: 'other_businesses', value: picked === DENY ? 'off' : 'on' });
+          m.closeAll();
+        }));
+    };
     const offMeta = () => m.el('div', null,
       m.row('Recent activity', '', () => {}),
       m.row('Clear previous activity', '', () => {
@@ -177,7 +200,7 @@ const pages = {
       m.el('h3', null, m.span('Information used to show you ads')),
       setting('Categories used to reach you', 'Information you share on your profile or other categories used to reach you.', null, '', () => {
         // One button per profile field that says whether it is used, and other categories with "Remove".
-        const field = (name, fallback) => {
+        const field = (name, fallback, second) => { // second: a further line, as in "Unspecified" + "Not used"
           const status = m.span(saved('cat:' + name, fallback));
           return m.el('div', { role: 'button', onclick: () => {
             m.dialog(name, 'Back', m.switchEl('Use ' + name, status.textContent === 'Used', (v) => {
@@ -185,7 +208,7 @@ const pages = {
               sessionStorage.setItem('mock:cat:' + name, status.textContent);
               m.rec('category', { name, value: v });
             }));
-          } }, m.span(name), status);
+          } }, m.span(name), status, second ? m.span(second) : null);
         };
         const other = (name) => {
           const r = m.el('div', null, m.span(name), m.button('Remove', () => { m.rec('uncategory', { name }); r.remove(); }));
@@ -193,7 +216,7 @@ const pages = {
         };
         m.dialog('Categories used to reach you', 'Close',
           m.el('h2', null, m.span('Choose profile information')),
-          field('Employer', 'Used'), field('Job title', 'Not used'), field('Education', 'Unspecified'), field('Relationship status', 'Used'),
+          field('Employer', 'Used'), field('Job title', 'Not used'), field('Education', 'Unspecified', 'Not used'), field('Relationship status', 'Used'),
           m.el('h2', null, m.span('Categories associated with you')),
           other('Frequent travelers'), other('Early technology adopters'));
       }),
