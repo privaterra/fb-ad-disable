@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FB Ad Disable & Privacy Hardener
 // @namespace    https://github.com/privaterra/fb-ad-disable
-// @version      1.4.0
+// @version      1.4.1
 // @description  Opt out of advertiser lists, restrict ad data use and tighten Facebook privacy settings from one menu.
 // @license      MIT
 // @match        https://www.facebook.com/*
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.4.0';
+  const VERSION = '1.4.1';
   const TAG = '[fb-ad-disable]';
   const KEY = 'fbAdDisableState';
   const MEMORY_KEY = 'fbAdDisableAdvertisers';
@@ -892,7 +892,7 @@
           .find((x) => !x.includes(base) && !/accountscenter\.facebook\.com/.test(x)) || '';
       }
       const uploaded = uploadedRow();
-      if (uploaded) { click(uploaded); nav.depth++; await settle(); }
+      if (uploaded) { click(uploaded); nav.depth++; tally.panel = (tally.panel || 0) + 1; await settle(); }
       rec.list_uses = listUses();
 
       let clicks = 0, prev = -1;
@@ -954,7 +954,10 @@
 
     const finish = () => {
       if (!done.size) throw new Error('no list-based advertisers were found');
-      const skipped = tally.skipped ? `, ${tally.skipped} skipped as remembered` : '';
+      const skipped = (tally.skipped ? `, ${tally.skipped} skipped as remembered` : '') +
+        // How the result was reached, so that "no change needed" can be checked against one advertiser by hand.
+        `. Advertisers opened by ${ls.way === 'direct' ? 'their own address' : ls.way === 'press' ? 'a full mouse click' : 'a click'}; ` +
+        `“They uploaded or used a list” panel opened on ${tally.panel || 0}`;
       const bare = tally.bare ? `, ${tally.bare} had no list controls` : '';
       const detail = o.dryRun
         ? `${tally.dry} of ${done.size} advertisers would be disabled${bare}${tally.failed ? `, ${tally.failed} failed` : ''}${skipped}`
@@ -1148,15 +1151,27 @@
     const total = () => new Set([...done, ...items().map(keyOf)]).size;
     const most = () => (state[doneKey + 'Total'] = Math.max(state[doneKey + 'Total'] || 0, total()));
     // More entries: a "See more" in the pop-up, or the end of a list that loads as it scrolls.
-    const more = async () => {
+    // Keeps going while the list grows, until `until()` is true or nothing more comes.
+    const load = async (until) => {
       if (!topLayer()) return false;
-      const btns = searchText(scope(), [...t('seeMore'), ...t('seeAll')], 'exact');
-      if (btns.length) { btns.forEach(click); await settle(); }
-      const list = items();
-      if (list.length) { try { list[list.length - 1].scrollIntoView({ block: 'end' }); } catch (e) { /* ignore */ } await settle(); }
-      return items().some((x) => !done.has(keyOf(x)));
+      for (let i = 0, stale = 0; i < 120 && stale < 2; i++) {
+        check();
+        if (until()) return true;
+        const before = items().length;
+        const btns = searchText(scope(), [...t('seeMore'), ...t('seeAll')], 'exact');
+        if (btns.length) { btns.forEach(click); await settle(); }
+        const list = items();
+        if (list.length) { try { list[list.length - 1].scrollIntoView({ block: 'end' }); } catch (e) { /* ignore */ } await settle(); }
+        stale = items().length > before ? 0 : stale + 1;
+        ui.progress(`${items().length} entries loaded…`);
+      }
+      return until();
     };
+    const more = () => load(() => items().some((x) => !done.has(keyOf(x))));
     let note = '';
+    // Count first: load the whole list, so the bar has its total and nothing is left unseen at the end.
+    await load(() => false);
+    ui.progress('');
     each(null, null, done.size, most());
     while (fails < 3 && done.size < 1000) {
       check();
@@ -1177,7 +1192,7 @@
       }
       const key = keyOf(el);
       const name = firstText(el);
-      const size = total();
+      const size = most();
       let outcome, info = {}, error = '';
       if (already && already(el)) {
         count.same++;

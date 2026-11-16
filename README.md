@@ -160,7 +160,7 @@ With **Save logs** on, **Copy log** and **Save log** appear during the run and i
 | Task | Where | What happens |
 | --- | --- | --- |
 | **Disable list-based advertisers** | Accounts Center → Ad preferences → Manage info → Audience-based advertising | For every advertiser: open it → *They uploaded or used a list to reach you* → **Don't allow**, for both showing you ads and excluding you from ads. This is the original script this project grew from. See the note below. |
-| **Hide advertisers you have seen** | Ad preferences → Advertisers you saw ads from | Opens each advertiser in the list and clicks **Hide ads**. Advertisers the list marks "You hid their ads" are counted as already hidden and left alone. After a hide Facebook can redraw the list with fewer entries; the script then loads the list afresh and carries on, and says so if entries are still missing at the end. |
+| **Hide advertisers you have seen** | Ad preferences → Advertisers you saw ads from | Opens each advertiser in the list and clicks **Hide ads**. Advertisers the list marks "You hid their ads" are counted as already hidden and left alone. The list loads as it is scrolled, so the script first scrolls it to the end to count it, and scrolls again whenever Facebook redraws it after a hide. If entries are still out of reach at the end the report says how many. |
 | **Restrict ad data settings** | Ad preferences → Manage info | *Activity from other businesses* (formerly "Activity information from ad partners") → not using this information · *Categories used to reach you* → employer, job title, education and relationship status set to not used, other categories removed · *Ads in other apps* (under "Ads shown outside of Meta") → not showing · *Ads about Meta* → not using your activity · *Social interactions* → Only me. A row that already says so ("Not using this information") is left untouched. |
 | **Clear off-Meta activity history** | Accounts Center → Your information and permissions → Your activity off Meta technologies | **Clear previous activity**. See the note below. |
 | **Disconnect future off-Meta activity** (off by default; Max ticks it) | same page | *Manage future activity* → **Disconnect future activity**. Side effect: "Log in with Facebook" on other sites and apps stops working. See the note below. |
@@ -174,6 +174,8 @@ Facebook answers an advertiser with "This page isn't available right now" unless
 1. a plain click on the entry,
 2. the full mouse sequence on the entry,
 3. loading each advertiser's own address, one page load per advertiser. This is slower (allow several seconds per advertiser) and needs the extension or the userscript, because a pasted script does not survive page loads.
+
+The result says which way was used and on how many advertisers the "They uploaded or used a list" panel opened, for example "0 disabled, 215 needed no change… Advertisers opened by a click; panel opened on 215". "Needed no change" means the panel showed "Allow" for both uses, which is what it shows once a use is disallowed. Check one advertiser by hand if the numbers surprise you.
 
 If no way works, the step is reported for manual follow-up and the run carries on with the other tasks. In that case open one advertiser by hand: if Facebook shows you the error page too, the fault is on Facebook's side.
 
@@ -232,7 +234,9 @@ Where Facebook offers nothing stricter than Friends (followers, public comments)
 
 - The engine (menu, page navigation and resume, text matching, dry run, progress bars, remembered advertisers, CSV and log export, reporting, the three run modes) is covered by automated tests that drive the real script in Chromium against mock Facebook pages: `npm test`.
 - The advertiser-list flow keeps the click sequence of the original console script this project started from.
-- The automated tests cannot log in to Facebook, so no flow is verified end to end on a live account by them. The setting names come from Meta's help pages and from failure reports of real runs; versions 1.2.0 to 1.2.2 reworked the steps that live runs reported as failing. A live dry run of 1.2.0 handled all but one of the audience and visibility settings and the AI settings. The advertiser steps and the renamed ad rows have been reworked since and are not yet confirmed on a live account: which of the three ways of opening an advertiser Facebook accepts is not known. That is why every step is reported and why you should start with a dry run.
+- The automated tests cannot log in to Facebook, so they prove nothing about live pages by themselves. The setting names come from Meta's help pages and from the reports of real runs.
+- A live run of 1.4.0 on one account (US, English, November 2026) completed every section: 215 list-based advertisers checked, 354 advertisers in the "saw ads from" list handled, the ad data settings, the AI settings and all 17 audience and visibility settings. Not exercised on that account, because the settings were already off: switching off a category field that is in use, removing "other categories", and choosing an option behind the renamed ad rows. Those paths are covered by the mock tests only.
+- Facebook serves different layouts to different accounts and changes them often. Expect differences, and start with a dry run.
 
 A safety rule that is tested: an option such as "Friends" or "Only me" is only ever clicked inside a dialog, menu or radio group, never elsewhere on the page.
 

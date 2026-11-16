@@ -71,16 +71,22 @@ const pages = {
       m.el('div', { style: 'display:flex;justify-content:space-between' }, m.el('h2', null, m.span('Ad topics')),
         m.el('div', { role: 'button', onclick: () => m.rec('decoy', { what: 'See all on the page behind the pop-up' }) }, m.span('See all'))));
     // An advertiser's panel says who they are; its button is "Hide ads", or "Unhide" once hidden.
-    // Which advertisers are hidden survives a reload. After a hide, the list is redrawn with
-    // only the hidden ones until the page is loaded again, as seen on the real site.
+    // Which advertisers are hidden survives a reload. The list loads two entries at a time as it
+    // is scrolled. After a hide it is redrawn from the top with the hidden advertisers first, so
+    // the ones still to do are further down again, as seen on the real site.
     const DATA = [['Acme', 'Retail company', '1,234 followers', 'http://acme.example/'],
       ['Globex', 'Energy company', '56,789 followers', 'http://globex.example/'],
       ['Initech', 'Software company', '321 followers', 'http://initech.example/'],
       ['Umbrella', 'Pharmaceutical company', '9,001 followers', 'http://umbrella.example/'],
       ['Hooli', 'Internet company', '3,231,099 followers', 'http://hooli.example/']];
     const hiddenNames = () => JSON.parse(sessionStorage.getItem('mock:hidden') || '["Hooli"]');
-    const box = m.el('div');
-    let shrunk = false;
+    const box = m.el('div', { style: 'height:30px;overflow:auto' });
+    let loaded = 2;
+    box.addEventListener('scroll', () => {
+      if (box.scrollTop + box.clientHeight < box.scrollHeight - 2 || loaded >= DATA.length) return;
+      loaded += 2;
+      render();
+    });
     const advertiser = ([name, category, followers, site]) => {
       const hidden = () => hiddenNames().includes(name);
       return m.el('div', { role: 'button', tabindex: '0', onclick: () => {
@@ -91,16 +97,18 @@ const pages = {
           sessionStorage.setItem('mock:hidden', JSON.stringify([...hiddenNames(), name]));
           status.firstChild.textContent = 'You chose to hide all ads from this advertiser.';
           btn.querySelector('span').textContent = 'Unhide';
-          shrunk = true;
+          loaded = 2;
           render();
+          box.scrollTop = 0;
         });
         m.dialog(name, 'Back',
           m.el('div', { role: 'listitem' }, m.span(category)), m.el('div', { role: 'listitem' }, m.span('We make things for ' + name)),
           m.button('Facebook Page', () => {}), m.button(followers, () => {}), m.button('Website', () => {}), m.button(site, () => {}),
           m.el('div', { role: 'listitem' }, m.span('Ads from this advertiser')), status, btn);
-      } }, m.span(name), m.span(hidden() ? 'You hid their ads' : ''));
+      } }, m.el('div', { style: 'height:22px' }, m.span(name), m.span(hidden() ? 'You hid their ads' : '')));
     };
-    const render = () => box.replaceChildren(...DATA.filter((d) => !shrunk || hiddenNames().includes(d[0])).map(advertiser));
+    const sorted = () => [...DATA].sort((a, b) => hiddenNames().includes(b[0]) - hiddenNames().includes(a[0]));
+    const render = () => box.replaceChildren(...sorted().slice(0, loaded).map(advertiser));
     render();
     m.dialog('Advertisers you saw ads from', 'Close',
       m.el('p', null, m.span('View and hide ads from advertisers you saw ads from.')),

@@ -312,17 +312,22 @@ test('progress bars, advertiser details CSV, saved log and remembered advertiser
   // Issue 2: the log as a file.
   const logFile = await saved(page, 'savelog');
   assert.match(logFile.file, /^fb-ad-disable-log-[\d-]+\.txt$/);
-  assert.match(logFile.text, /^fb-ad-disable 1\.4\.0 log\n/);
+  assert.match(logFile.text, /^fb-ad-disable 1\.4\.1 log\n/);
   assert.match(logFile.text, /Options: \{.*"saveLog":true/);
   assert.match(logFile.text, /\d\d:\d\d:\d\d   6 advertisers found, 6 to process/);
   assert.match(logFile.text, /\d\d:\d\d:\d\d Finished\.\n$/);
   // One formatted line per advertiser, as it is processed.
   assert.match(logFile.text, /\[1\/6\] Data Broker One · Showing ads to you using a list: allowed \| Excluding you from ads using a list: allowed → disabled, remembered\n/);
   assert.match(logFile.text, /\[6\/6\] Broken Page Ltd → failed: Facebook showed “This page isn’t available right now”\n/);
-  assert.match(logFile.text, /\[1\/5\] Acme · Retail company · 1,234 followers · http:\/\/acme\.example\/ → ads hidden\n/);
+  assert.match(logFile.text, /\[2\/5\] Acme · Retail company · 1,234 followers · http:\/\/acme\.example\/ → ads hidden\n/);
   assert.match(logFile.text, /\[\d\/5\] Hooli · Internet company · 3,231,099 followers · http:\/\/hooli\.example\/ → already hidden\n/);
-  // After each hide the list was redrawn with only the hidden advertisers; the script loaded it afresh and went on.
+  // The list loads as it scrolls and is redrawn from the top after each hide: every advertiser is still reached,
+  // and the total is known from the start.
   assert.equal((logFile.text.match(/→ ads hidden\n/g) || []).length, 4);
+  assert.match(logFile.text, /\[1\/5\] Hooli/);
+  assert.doesNotMatch(r.seen.text, /no longer shown/);
+  // How the list-based result was reached is part of it.
+  assert.match(r.lists.text, /Advertisers opened by a click; “They uploaded or used a list” panel opened on 4/);
 
   // Issue 1: advertisers the page confirmed as disabled are remembered and skipped next time.
   await p.locator('button[name="menu"]').click();
