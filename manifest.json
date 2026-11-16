@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FB Ad Disable & Privacy Hardener",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "description": "Opt out of advertiser lists, restrict ad data use and tighten Facebook privacy settings from one menu.",
   "action": { "default_title": "FB Ad Disable: open the menu" },
   "background": { "service_worker": "background.js" },

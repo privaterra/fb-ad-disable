@@ -56,7 +56,7 @@ The extension only runs on Facebook pages and does nothing until you click its i
 3. Chrome blocks pasting into the console the first time: type `allow pasting` and press Enter. Facebook also prints a warning there about pasting code you do not understand. That warning is sound advice in general; read `fb-ad-disable.js` before you paste it.
 4. Paste the whole content of `fb-ad-disable.js` and press Enter. The menu appears.
 5. Choose your options and press **Start**.
-6. **When the page reloads, the menu disappears**, because a pasted script cannot survive a page load. Press `↑` then Enter in the console (or paste again) and the run continues from where it stopped. Repeat until the report appears.
+6. **When the page reloads, the menu disappears**, because a pasted script cannot survive a page load. Press `↑` then Enter in the console (or paste again) and the run continues from where it stopped. When the run has just moved between Facebook's two sites, the menu asks first: click **Resume it**. Repeat until the report appears.
 
 To avoid re-pasting, save the script once under **Sources → Snippets → New snippet** and run it with `Ctrl+Enter`.
 
@@ -252,6 +252,14 @@ A safety rule that is tested: an option such as "Friends" or "Only me" is only e
 - **Another language.** Add a key next to `en` in `L`, and add the translated row text to the `row` lists.
 - **`web.facebook.com`.** Supported: start the script there.
 
+## Security
+
+[SECURITY.md](SECURITY.md) has the review of November 2026 and what was fixed. In short:
+
+- **CSV export** cannot be used for formula injection: every cell is quoted, and a value that starts with `=`, `+`, `-` or `@` (after any spaces, and in full-width form too) gets an apostrophe in front so a spreadsheet shows it as text.
+- **A saved run is checked before it is used**, and in console mode a run found in the tab is offered with **Resume it** instead of being started. Expect that button once each time a pasted run moves between `www.facebook.com` and `accountscenter.facebook.com`.
+- **Dependencies** are locked, updated by Dependabot, and checked against published advisories by `npm audit` on every push and weekly. CodeQL scans the code.
+
 ## Development
 
 ```bash
@@ -269,6 +277,9 @@ npm test
 | `test/mock/` | Mock Facebook pages. |
 | `LICENSE` | MIT licence. |
 | `test/run.test.js` | End-to-end tests (Playwright). |
+| `package-lock.json` | The exact library versions the tests run with. |
+| `.github/` | CI (tests, `npm audit`), CodeQL and Dependabot. |
+| `SECURITY.md` | Security review and how the project is kept current. |
 
 ## Disclaimer
 

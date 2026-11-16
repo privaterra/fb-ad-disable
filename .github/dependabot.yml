@@ -1,0 +1,16 @@
+# Keeps the libraries this project builds and tests with current.
+# Dependabot opens a pull request for each update, and the CI workflow tests it.
+# Security advisories: turn on "Dependabot alerts" and "Dependabot security updates" under
+# Settings → Advanced Security, and a fix is proposed as soon as an advisory is published.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

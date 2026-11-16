@@ -1,13 +1,18 @@
 {
   "name": "fb-ad-disable",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "private": true,
   "license": "MIT",
   "description": "Opt out of advertiser lists, restrict ad data use and tighten Facebook privacy settings from one menu.",
   "scripts": {
-    "test": "node --test test/run.test.js"
+    "test": "node --test test/run.test.js",
+    "audit": "npm audit",
+    "outdated": "npm outdated"
   },
   "devDependencies": {
     "playwright": "^1.50.0"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

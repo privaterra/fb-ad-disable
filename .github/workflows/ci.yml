@@ -1,0 +1,61 @@
+name: CI
+
+# On every push and pull request, and once a week so that a newly published
+# advisory or a breaking library release is noticed without anyone pushing.
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests and advisories (locked versions)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+          cache: npm
+      - name: Install the locked versions
+        run: npm ci
+      - name: Security advisories
+        run: npm audit
+      - name: Syntax
+        run: node --check fb-ad-disable.js && node --check background.js
+      - name: Extension manifest
+        run: node -e "const m = require('./manifest.json'); if (m.manifest_version !== 3 || m.version !== require('./package.json').version) process.exit(1)"
+      - name: Install the browser
+        run: npx playwright install --with-deps chromium
+      - name: Tests
+        run: npm test
+
+  latest:
+    name: Tests and advisories (latest versions)
+    # The same checks against the newest release of every library, ahead of the lockfile.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+      - name: Install the latest versions
+        run: |
+          npm install --no-save $(node -e "console.log(Object.keys(require('./package.json').devDependencies).map((d) => d + '@latest').join(' '))")
+          npm ls
+      - name: Libraries behind their latest release
+        run: npm outdated || true
+      - name: Security advisories
+        run: npm audit
+      - name: Install the browser
+        run: npx playwright install --with-deps chromium
+      - name: Tests
+        run: npm test

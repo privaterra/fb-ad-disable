@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FB Ad Disable & Privacy Hardener
 // @namespace    https://github.com/privaterra/fb-ad-disable
-// @version      1.4.1
+// @version      1.5.0
 // @description  Opt out of advertiser lists, restrict ad data use and tighten Facebook privacy settings from one menu.
 // @license      MIT
 // @match        https://www.facebook.com/*
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.4.1';
+  const VERSION = '1.5.0';
   const TAG = '[fb-ad-disable]';
   const KEY = 'fbAdDisableState';
   const MEMORY_KEY = 'fbAdDisableAdvertisers';
@@ -227,8 +227,9 @@
       let a = null, b = null;
       try { a = parse(sessionStorage.getItem(KEY)); } catch (e) { /* storage blocked */ }
       if ((window.name || '').startsWith(KEY + ':')) b = parse(window.name.slice(KEY.length + 1));
-      if (a && b) return (a.savedAt || 0) >= (b.savedAt || 0) ? a : b;
-      return a || b;
+      const pick = a && b ? ((a.savedAt || 0) >= (b.savedAt || 0) ? a : b) : a || b;
+      fromWindowName = !!pick && pick === b;
+      return pick;
     },
     set: async (v) => {
       const s = JSON.stringify(v);
@@ -243,6 +244,52 @@
     save: (m) => durable.set(MEMORY_KEY, m),
   };
 
+  // A link or an address is only used when it is https on Facebook's own sites (or Meta AI's).
+  // Addresses kept in the saved run are checked too: a saved run is data, not something to trust.
+  function safeUrl(value) {
+    try {
+      const u = new URL(String(value));
+      return u.protocol === 'https:' && (/(^|\.)facebook\.com$/.test(u.hostname) || u.hostname === 'www.meta.ai') ? u.href : '';
+    } catch (e) { return ''; }
+  }
+
+  // A saved run is only accepted when it has the shape this script writes. In console mode the
+  // saved run travels in window.name, which any site the tab visited before could have set.
+  function sane(st) {
+    if (!st || typeof st !== 'object' || Array.isArray(st)) return null;
+    const o = st.opts;
+    if (!o || typeof o !== 'object' || !Array.isArray(o.tasks)) return null;
+    const taskIds = TASKS.map((x) => x.id);
+    if (!o.tasks.every((x) => taskIds.includes(x)) || !LEVELS.some((x) => x.id === o.level)) return null;
+    st.opts = {
+      tasks: [...new Set(o.tasks)], level: o.level, dryRun: !!o.dryRun,
+      delay: Math.min(10000, Math.max(20, Number(o.delay) || 1500)),
+      remember: !!o.remember, skipKnown: !!o.skipKnown, saveInfo: !!o.saveInfo, saveLog: !!o.saveLog,
+    };
+    st.idx = Math.max(0, Math.floor(Number(st.idx)) || 0);
+    st.running = st.running === true;
+    st.results = (Array.isArray(st.results) ? st.results : []).slice(0, 500)
+      .filter((r) => r && typeof r === 'object' && ['changed', 'already', 'dry', 'manual', 'info'].includes(r.status))
+      .map((r) => ({ ...r, url: safeUrl(r.url) }));
+    st.log = (Array.isArray(st.log) ? st.log : []).filter((x) => typeof x === 'string').slice(-20000);
+    st.records = (Array.isArray(st.records) ? st.records : []).filter((r) => r && typeof r === 'object').slice(0, 5000);
+    for (const key of ['alias', 'renav', 'alt', 'altSeen', 'altWhy', 'renavAt', 'reloads', 'adv']) {
+      if (st[key] != null && (typeof st[key] !== 'object' || Array.isArray(st[key]))) st[key] = {};
+    }
+    if (st.lists && Array.isArray(st.lists.all)) st.lists.all = st.lists.all.filter((x) => x && isAdvertiserUrl(x.href));
+    if (st.lists && st.lists.at && !isAdvertiserUrl(st.lists.at.href)) st.lists.at = null;
+    return st;
+  }
+
+  // An advertiser's page in Accounts Center: the only address a step may load apart from its own.
+  function isAdvertiserUrl(href) {
+    try {
+      const u = new URL(String(href));
+      return u.origin === AC && u.pathname.startsWith('/ads/audience_based_advertising/');
+    } catch (e) { return false; }
+  }
+
+  let fromWindowName = false; // console mode: the saved run was read from window.name
   let state = null;
   let units = [];
   let stopRequested = false;
@@ -597,6 +644,7 @@
 
   // Loads another page in the middle of a step; the step picks up there when the page has loaded.
   async function travel(unitId, href) {
+    if (!isAdvertiserUrl(href)) throw new Error('refused to open an address that is not an advertiser page');
     state.navFor = unitId;
     state.navKeep = true;
     state.navAt = Date.now();
@@ -685,14 +733,25 @@
     [rec.name, rec.category, rec.followers, rec.website, rec.list_uses].filter(Boolean).join(' · ') +
     ` → ${rec.result}${rec.remembered ? ', remembered' : ''}${rec.error ? ': ' + rec.error : ''}`;
 
+  // Every value in the file comes from Facebook's pages, and advertisers choose their own names.
+  // A spreadsheet runs a cell as a formula when it starts with = + - or @ (and their full-width
+  // forms), which can leak data or start a program. So:
+  //   - a cell that starts with one of those, after any leading spaces, gets an apostrophe in
+  //     front, which makes a spreadsheet show it as text;
+  //   - control characters, tabs and line breaks become spaces, so a value cannot open a new
+  //     cell or line however the file is read;
+  //   - every cell is quoted, so a ";" or a tab inside a value cannot split it into a second
+  //     cell where the spreadsheet's list separator is not a comma.
+  function csvCell(value) {
+    let text = value == null ? '' : String(value);
+    text = text.replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, ' ');
+    if (/^\s*[=+\-@\uff1d\uff0b\uff0d\uff20]/.test(text)) text = "'" + text;
+    return '"' + text.replace(/"/g, '""') + '"';
+  }
+
   function toCsv(rows) {
-    const cell = (v) => {
-      let s = v == null ? '' : String(v);
-      if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; // advertiser text must never run as a spreadsheet formula
-      return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-    };
     return '\uFEFF' + [CSV_COLUMNS, ...rows.map((r) => CSV_COLUMNS.map((c) => r[c]))]
-      .map((r) => r.map(cell).join(',')).join('\r\n') + '\r\n';
+      .map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
   }
 
   function advertiserId(href) {
@@ -1734,6 +1793,7 @@
     for (const [k, v] of Object.entries(props || {})) {
       if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
       else if (k === 'class') el.className = v;
+      else if (k === 'href' && !/^blob:/.test(v) && !safeUrl(v)) continue; // never a javascript: or foreign link
       else if (v === true) el.setAttribute(k, '');
       else if (v !== false && v != null) el.setAttribute(k, v);
     }
@@ -2075,16 +2135,19 @@
     version: VERSION,
     async open() {
       if (busy) return;
-      state = await store.get();
+      state = sane(await store.get());
       ui.showMenu();
     },
+    _csv: toCsv, // for the tests
   };
 
   (async function boot() {
-    const saved = await store.get();
+    const saved = sane(await store.get());
     // A run that navigated moments ago continues by itself. Anything older waits for "Resume it".
+    // So does a run read from window.name: another site could have left it in the tab, so it is
+    // shown with "Resume it" for you to decide, never started by itself.
     const fresh = saved && saved.running && saved.navAt && Date.now() - saved.navAt < (MODE === 'console' ? 15 * 60e3 : 2 * 60e3);
-    if (fresh) { state = saved; resume(); return; }
+    if (fresh && !fromWindowName) { state = saved; resume(); return; }
     // The page reloaded under a run in this very tab (Facebook does that at times): carry on.
     if (MODE !== 'console' && saved && saved.running && isRunTab(saved) && Date.now() - (saved.savedAt || 0) < 10 * 60e3) {
       state = saved;
