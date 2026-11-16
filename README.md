@@ -203,7 +203,7 @@ Where Facebook offers nothing stricter than Friends (followers, public comments)
 
 - The engine (menu, page navigation and resume, text matching, dry run, progress bars, remembered advertisers, CSV and log export, reporting, the three run modes) is covered by automated tests that drive the real script in Chromium against mock Facebook pages: `npm test`.
 - The advertiser-list flow keeps the click sequence of the original console script this project started from.
-- The automated tests cannot log in to Facebook, so no flow is verified end to end on a live account by them. The setting names come from Meta's help pages and from failure reports of real runs; versions 1.2.0 and 1.2.1 reworked the steps that live runs reported as failing; after 1.2.1 a live dry run completed every audience and visibility setting, while the advertiser steps and the renamed ad rows are reworked but not yet confirmed. That is why every step is reported and why you should start with a dry run.
+- The automated tests cannot log in to Facebook, so no flow is verified end to end on a live account by them. The setting names come from Meta's help pages and from failure reports of real runs; versions 1.2.0 and 1.2.1 reworked the steps that live runs reported as failing. A live dry run of 1.2.0 handled all but one of the audience and visibility settings and the AI settings; the advertiser steps and the renamed ad rows were reworked in 1.2.1 and are not yet confirmed on a live account. That is why every step is reported and why you should start with a dry run.
 
 A safety rule that is tested: an option such as "Friends" or "Only me" is only ever clicked inside a dialog, menu or radio group, never elsewhere on the page.
 
