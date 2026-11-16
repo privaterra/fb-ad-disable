@@ -195,12 +195,6 @@ Where Facebook offers nothing stricter than Friends (followers, public comments)
 - It does not touch Messenger active status, location settings in the mobile apps, or apps and websites connected to your account (Settings → Apps and websites). Do those by hand.
 - New advertisers appear over time. Run the advertiser tasks again every few months.
 
-## Beyond Facebook's settings
-
-- **Find where your photos appear.** Run your profile and cover photos through a reverse image search such as [TinEye](https://tineye.com) or Google Lens to see where else they have been copied.
-- **Ask data brokers to delete your record.** Facebook's settings only control use on Meta; the broker still holds the data until you ask it to delete it.
-- **Review connected apps.** Settings → Apps and websites lists the services that can still read your Facebook data.
-
 ## How well tested is it
 
 - The engine (menu, page navigation and resume, text matching, dry run, progress bars, remembered advertisers, CSV and log export, reporting, the three run modes) is covered by automated tests that drive the real script in Chromium against mock Facebook pages: `npm test`.
