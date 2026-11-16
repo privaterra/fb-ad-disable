@@ -51,6 +51,12 @@ npm audit
 npm outdated
 ```
 
+## Releases
+
+A release is built by the Release workflow from the tagged commit, after `npm audit` and the tests
+pass. The files are the repository's own, unmodified, and `SHA256SUMS.txt` lets you check a
+download. The userscript does not update itself: a new version only runs when you install it.
+
 ## Reporting a problem
 
 Open an issue, or for something that should not be public yet, use **Report a vulnerability**

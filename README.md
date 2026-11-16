@@ -1,5 +1,8 @@
 # fb-ad-disable
 
+[![CI](https://github.com/privaterra/fb-ad-disable/actions/workflows/ci.yml/badge.svg)](https://github.com/privaterra/fb-ad-disable/actions/workflows/ci.yml)
+[Latest release](https://github.com/privaterra/fb-ad-disable/releases/latest) · [Changelog](CHANGELOG.md) · [Security](SECURITY.md)
+
 A script for Google Chrome that works through Facebook's own settings pages for you, while you are logged in, to:
 
 - stop advertisers and data brokers that uploaded a contact list containing your details from using it to target you,
@@ -29,7 +32,7 @@ There are three ways to run the same file, `fb-ad-disable.js`. The extension is 
 
 ### Option 1: Chrome extension (recommended)
 
-1. Download this repository (**Code → Download ZIP**, then unzip) or clone it.
+1. From the [latest release](https://github.com/privaterra/fb-ad-disable/releases/latest), download `fb-ad-disable-<version>.zip` and unzip it. (Or clone this repository.)
 2. In Chrome open `chrome://extensions`.
 3. Turn on **Developer mode** (top right).
 4. Click **Load unpacked** and select the `fb-ad-disable` folder (the one containing `manifest.json`).
@@ -44,7 +47,7 @@ The extension only runs on Facebook pages and does nothing until you click its i
 ### Option 2: Userscript (Tampermonkey or Violentmonkey)
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) in Chrome.
-2. Tampermonkey icon → **Create a new script**, delete the template, paste the whole content of `fb-ad-disable.js`, and save.
+2. Open [`fb-ad-disable.user.js` from the latest release](https://github.com/privaterra/fb-ad-disable/releases/latest/download/fb-ad-disable.user.js) and confirm when Tampermonkey offers to install it. (Or: Tampermonkey icon → **Create a new script**, delete the template, paste the whole content of `fb-ad-disable.js`, and save.) It does not update by itself: install the newer file from a later release when you want it.
 3. Open [facebook.com](https://www.facebook.com), logged in.
 4. Tampermonkey icon → **Open FB Ad Disable**.
 5. Choose your options and press **Start**, as above.
@@ -260,6 +263,26 @@ A safety rule that is tested: an option such as "Friends" or "Only me" is only e
 - **A saved run is checked before it is used**, and in console mode a run found in the tab is offered with **Resume it** instead of being started. Expect that button once each time a pasted run moves between `www.facebook.com` and `accountscenter.facebook.com`.
 - **Dependencies** are locked, updated by Dependabot, and checked against published advisories by `npm audit` on every push and weekly. CodeQL scans the code.
 
+## Releases
+
+Each [release](https://github.com/privaterra/fb-ad-disable/releases) has three files:
+
+| File | Use |
+| --- | --- |
+| `fb-ad-disable-<version>.zip` | The Chrome extension. Unzip, then **Load unpacked** (Option 1). |
+| `fb-ad-disable.user.js` | The userscript (Option 2). The same file can be pasted into the console (Option 3). |
+| `SHA256SUMS.txt` | Checksums of the two files above. |
+
+To check a download, put it next to `SHA256SUMS.txt` and run:
+
+```bash
+sha256sum -c SHA256SUMS.txt
+```
+
+A release is built from a tagged commit by the Release workflow, after the tests and `npm audit` pass. Nothing is added to the files beyond what is in this repository.
+
+To publish one: set the version in `package.json`, `package-lock.json`, `manifest.json` and the two places in `fb-ad-disable.js`, add its section to `CHANGELOG.md`, push, then run **Release** from the Actions tab. The workflow checks that the version matches everywhere, refuses a version that is already released, and creates the tag and the release.
+
 ## Development
 
 ```bash
@@ -270,6 +293,12 @@ npm install
 npm test
 ```
 
+```bash
+npm run build
+```
+
+`npm run build` writes the release files to `dist/`.
+
 | File | Purpose |
 | --- | --- |
 | `fb-ad-disable.js` | The script: userscript header, settings tables, engine, panel. |
@@ -278,6 +307,8 @@ npm test
 | `LICENSE` | MIT licence. |
 | `test/run.test.js` | End-to-end tests (Playwright). |
 | `package-lock.json` | The exact library versions the tests run with. |
+| `scripts/release.js` | Builds the release files and checks the version is the same everywhere. |
+| `CHANGELOG.md` | What changed in each version; a release's notes are its section. |
 | `.github/` | CI (tests, `npm audit`), CodeQL and Dependabot. |
 | `SECURITY.md` | Security review and how the project is kept current. |
 

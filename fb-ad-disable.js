@@ -4,6 +4,8 @@
 // @version      1.5.0
 // @description  Opt out of advertiser lists, restrict ad data use and tighten Facebook privacy settings from one menu.
 // @license      MIT
+// @homepageURL  https://github.com/privaterra/fb-ad-disable
+// @supportURL   https://github.com/privaterra/fb-ad-disable/issues
 // @match        https://www.facebook.com/*
 // @match        https://web.facebook.com/*
 // @match        https://accountscenter.facebook.com/*

@@ -1,0 +1,54 @@
+name: Release
+
+# Publishes the version in package.json as a GitHub release, with the extension zip, the
+# userscript and their checksums attached.
+#
+# To release: set the version (package.json, package-lock.json, manifest.json and the two
+# places in fb-ad-disable.js), add its section to CHANGELOG.md, push, then run this workflow
+# from the Actions tab. It refuses to run twice for the same version.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Test, build and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write # to create the tag and the release
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: npm
+      - name: Install the locked versions
+        run: npm ci
+      - name: Security advisories
+        run: npm audit
+      - name: Build the release files
+        id: build
+        run: node scripts/release.js
+      - name: Not released already
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ steps.build.outputs.version }}" >/dev/null 2>&1; then
+            echo "::error::v${{ steps.build.outputs.version }} is already released. Raise the version first."
+            exit 1
+          fi
+      - name: Install the browser
+        run: npx playwright install --with-deps chromium
+      - name: Tests
+        run: npm test
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${{ steps.build.outputs.version }}"
+          gh release create "v$version" \
+            "dist/fb-ad-disable-$version.zip" dist/fb-ad-disable.user.js dist/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" --title "v$version" --notes-file dist/notes.md

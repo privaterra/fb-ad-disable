@@ -7,7 +7,8 @@
   "scripts": {
     "test": "node --test test/run.test.js",
     "audit": "npm audit",
-    "outdated": "npm outdated"
+    "outdated": "npm outdated",
+    "build": "node scripts/release.js"
   },
   "devDependencies": {
     "playwright": "^1.50.0"
