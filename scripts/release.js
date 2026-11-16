@@ -35,7 +35,10 @@ if (!/^\d+\.\d+\.\d+$/.test(version)) fail(`"${version}" is not a version like 1
 // The release notes are this version's section of the changelog.
 const section = read('CHANGELOG.md').split(/^## /m).find((part) => part.startsWith(`[${version}]`));
 if (!section) fail(`CHANGELOG.md has no section for ${version}`);
-const notes = section.split('\n').slice(1).join('\n').trim();
+const repo = 'https://github.com/privaterra/fb-ad-disable';
+const notes = section.split('\n').slice(1).join('\n').trim()
+  // A link to a file in this repository only works on the release page as a full address, at this version.
+  .replace(/\]\((?![a-z]+:|#|\/)([^)\s]+)\)/g, `](${repo}/blob/v${version}/$1)`);
 if (!notes) fail(`the CHANGELOG.md section for ${version} is empty`);
 
 const dist = path.join(root, 'dist');
