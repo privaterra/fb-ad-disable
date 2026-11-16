@@ -70,28 +70,46 @@ const pages = {
     m.main().append(m.el('h1', null, m.span('Ad preferences')),
       m.el('div', { style: 'display:flex;justify-content:space-between' }, m.el('h2', null, m.span('Ad topics')),
         m.el('div', { role: 'button', onclick: () => m.rec('decoy', { what: 'See all on the page behind the pop-up' }) }, m.span('See all'))));
-    const advertiser = (name) => m.el('div', { role: 'button', tabindex: '0', onclick: () => {
-      const btn = m.button('Hide ads', () => {
-        if (btn.textContent !== 'Hide ads') return;
-        m.rec('hide', { name });
-        btn.querySelector('span').textContent = 'Undo';
-      });
-      m.dialog(name, 'Back', m.el('p', null, 'You saw an ad from this advertiser.'), btn);
-    } }, m.span(name));
+    // An advertiser's panel says who they are; its button is "Hide ads", or "Unhide" once hidden.
+    const advertiser = ([name, category, followers, site, hidden]) => {
+      const note = m.span(hidden ? 'You hid their ads' : '');
+      return m.el('div', { role: 'button', tabindex: '0', onclick: () => {
+        const status = m.el('div', { role: 'listitem' }, m.span(hidden ? 'You chose to hide all ads from this advertiser.' : ''));
+        const btn = m.button(hidden ? 'Unhide' : 'Hide ads', () => {
+          if (btn.textContent !== 'Hide ads') return m.rec('decoy', { what: 'Unhide clicked' });
+          m.rec('hide', { name });
+          hidden = true;
+          note.textContent = 'You hid their ads';
+          status.firstChild.textContent = 'You chose to hide all ads from this advertiser.';
+          btn.querySelector('span').textContent = 'Unhide';
+        });
+        m.dialog(name, 'Back',
+          m.el('div', { role: 'listitem' }, m.span(category)), m.el('div', { role: 'listitem' }, m.span('We make things for ' + name)),
+          m.button('Facebook Page', () => {}), m.button(followers, () => {}), m.button('Website', () => {}), m.button(site, () => {}),
+          m.el('div', { role: 'listitem' }, m.span('Ads from this advertiser')), status, btn);
+      } }, m.span(name), note);
+    };
     m.dialog('Advertisers you saw ads from', 'Close',
       m.el('p', null, m.span('View and hide ads from advertisers you saw ads from.')),
       m.el('div', { role: 'button', onclick: () => m.rec('decoy', { what: 'filter' }) }, m.span('All advertisers')),
       m.el('div', { role: 'button', onclick: () => m.rec('decoy', { what: 'filter' }) }, m.span('All accounts')),
-      ['Acme', 'Globex', 'Initech', 'Umbrella', 'Hooli'].map(advertiser));
+      [['Acme', 'Retail company', '1,234 followers', 'http://acme.example/'],
+        ['Globex', 'Energy company', '56,789 followers', 'http://globex.example/'],
+        ['Initech', 'Software company', '321 followers', 'http://initech.example/'],
+        ['Umbrella', 'Pharmaceutical company', '9,001 followers', 'http://umbrella.example/'],
+        ['Hooli', 'Internet company', '3,231,099 followers', 'http://hooli.example/', true]].map(advertiser));
   },
 
   // ---- accountscenter: off-Meta activity --------------------------------
   'ac /info_and_permissions': () => {
     const m = window.mock;
-    // Meta has removed this setting for many accounts; the tests cover both cases.
-    m.main().append(m.el('h1', null, m.span('Your information and permissions')),
-      m.row('Download your information', '', () => {}),
-      window.__flags.offMeta ? m.row('Your activity off Meta technologies', '', () => m.dialog('Your activity off Meta technologies', 'Back', offMeta())) : null);
+    // Meta folded "Your activity off Meta technologies" into "Activity from other businesses".
+    // On many accounts nothing is left to clear or disconnect there; the tests cover both cases.
+    m.main().append(...[m.el('h1', null, m.span('Your information and permissions')),
+      m.button('Export your information', () => {}),
+      m.button('Activity from other businesses', () => m.dialog('Activity from other businesses', 'Back',
+        window.__flags.offMeta ? offMeta() : m.el('p', null, m.span('Choose whether we use this activity to show you relevant content.')))),
+      m.button('App connections', () => {})]);
     const offMeta = () => m.el('div', null,
       m.row('Recent activity', '', () => {}),
       m.row('Clear previous activity', '', () => {
@@ -158,8 +176,26 @@ const pages = {
     const manage = m.el('div', { hidden: '' },
       m.el('h3', null, m.span('Information used to show you ads')),
       setting('Categories used to reach you', 'Information you share on your profile or other categories used to reach you.', null, '', () => {
-        m.dialog('Categories used to reach you', 'Back', ['Employer', 'Job title', 'Education', 'Relationship status'].map((c, i) =>
-          m.el('div', null, m.span(c), m.switchEl(c, i % 2 === 0, (v) => m.rec('category', { name: c, value: v })))));
+        // One button per profile field that says whether it is used, and other categories with "Remove".
+        const field = (name, fallback) => {
+          const status = m.span(saved('cat:' + name, fallback));
+          return m.el('div', { role: 'button', onclick: () => {
+            m.dialog(name, 'Back', m.switchEl('Use ' + name, status.textContent === 'Used', (v) => {
+              status.textContent = v ? 'Used' : 'Not used';
+              sessionStorage.setItem('mock:cat:' + name, status.textContent);
+              m.rec('category', { name, value: v });
+            }));
+          } }, m.span(name), status);
+        };
+        const other = (name) => {
+          const r = m.el('div', null, m.span(name), m.button('Remove', () => { m.rec('uncategory', { name }); r.remove(); }));
+          return r;
+        };
+        m.dialog('Categories used to reach you', 'Close',
+          m.el('h2', null, m.span('Choose profile information')),
+          field('Employer', 'Used'), field('Job title', 'Not used'), field('Education', 'Unspecified'), field('Relationship status', 'Used'),
+          m.el('h2', null, m.span('Categories associated with you')),
+          other('Frequent travelers'), other('Early technology adopters'));
       }),
       partners,
       setting('Audience-based advertising', 'Advertisers using your activity or information', null, '', () => {
@@ -167,6 +203,7 @@ const pages = {
         history.pushState({}, '', '/ads/audience_based_advertising/');
         const view = m.el('div');
         m.dialog('Audience-based advertising', 'Close', view);
+        if (window.__flags.listMode === 'error') return m.somethingWentWrong(view);
         m.advertiserList(view, true);
       }),
       // A heading, not a row: clicking it does nothing useful.
@@ -200,7 +237,13 @@ const pages = {
 
   // ---- accountscenter: advertisers that uploaded a list (see lib.js) -----
   'ac /ads/audience_based_advertising': () => {
-    window.mock.advertiserList(window.mock.main(), false); // loaded by its address
+    const m = window.mock;
+    if (window.__flags.listMode === 'error') { // Facebook's own error where the list should be
+      const view = m.el('div');
+      m.dialog('', 'Close', view);
+      return m.somethingWentWrong(view);
+    }
+    m.advertiserList(m.main(), false); // loaded by its address
   },
   'ac /ads/audience_based_advertising/:id': () => {
     window.mock.advertiserPage(window.mock.main());

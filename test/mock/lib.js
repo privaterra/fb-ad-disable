@@ -245,5 +245,9 @@
     if (a && window.__flags.listMode === 'direct') advertiserDetail(view, a, false); else errorPage(view);
   }
 
-  window.mock = { advertiserList, advertiserPage, deep, viewRow, deepSwitchRows, checkboxDialogRow, popupRow, el, span, rec, main, button, dialog, closeAll, radios, switchEl, row, audienceRow, menuRow, inlineSwitchRow, dialogSwitchRow, onOffRow };
+  function somethingWentWrong(view) {
+    view.replaceChildren(el('h2', null, span('Something went wrong')), el('p', null, span('Please try again later.')));
+  }
+
+  window.mock = { somethingWentWrong, advertiserList, advertiserPage, deep, viewRow, deepSwitchRows, checkboxDialogRow, popupRow, el, span, rec, main, button, dialog, closeAll, radios, switchEl, row, audienceRow, menuRow, inlineSwitchRow, dialogSwitchRow, onOffRow };
 })();

@@ -126,9 +126,14 @@ test('userscript mode, Max level: every task runs across both sites', async () =
   assert.match(r.lists.text, /3 disabled, 1 needed no change, 1 had no list controls, 1 failed \(of 6\)/);
   assert.match(r.lists.text, /What the page showed/);
 
-  assert.deepEqual(events.filter((e) => e.type === 'hide').map((e) => e.name).sort(), ['Acme', 'Globex', 'Hooli', 'Initech', 'Umbrella']);
+  // Hooli's ads are hidden already: the list says so and it is left alone.
+  assert.deepEqual(events.filter((e) => e.type === 'hide').map((e) => e.name).sort(), ['Acme', 'Globex', 'Initech', 'Umbrella']);
+  assert.match(r.seen.text, /4 advertisers hidden, 1 already hidden/);
 
-  assert.deepEqual(events.filter((e) => e.type === 'category').map((e) => `${e.name}:${e.value}`).sort(), ['Education:false', 'Employer:false']);
+  // Categories: only the profile fields still in use are switched off, and the other categories removed.
+  assert.deepEqual(events.filter((e) => e.type === 'category').map((e) => `${e.name}:${e.value}`).sort(), ['Employer:false', 'Relationship status:false']);
+  assert.equal(events.filter((e) => e.type === 'uncategory').length, 2);
+  assert.match(r.ad_categories.text, /employer: switched off · job title: not used · education: unspecified · relationship status: switched off · 2 other categories removed/);
   assert.equal(events.filter((e) => e.type === 'offclear').length, 1);
   assert.equal(events.filter((e) => e.type === 'offfuture').length, 1);
 
@@ -180,9 +185,11 @@ test('dry run changes nothing and reports what it would do', async () => {
   for (const id of ['offclear', 'offfuture']) {
     assert.equal(r[id].status, 'info');
     assert.match(r[id].text, /Facebook does not offer this on your account/);
+    // It looked inside "Activity from other businesses" and found nothing to clear or disconnect.
+    assert.match(r[id].text, /What the page showed.*Choose whether we use this activity/);
   }
   assert.equal(r.ad_partners.status, 'dry');
-  assert.match(r.seen.text, /5 advertisers would be hidden/);
+  assert.match(r.seen.text, /4 advertisers would be hidden, 1 already hidden/);
   assert.equal(r.future_posts.status, 'dry');
   assert.match(r.future_posts.text, /would select “Friends”/);
   assert.equal(r.post_on_profile.status, 'already', 'Moderate keeps a value that is already Friends');
@@ -263,6 +270,9 @@ test('progress bars, advertiser details CSV, saved log and remembered advertiser
   assert.match(await p.locator('#eta').textContent(), /^Time left: (under a minute|about \d+ min)/);
   assert.match(await p.locator('#step').textContent(), /^Step 1 of 2: /);
   await p.locator('button[name="savelog"]').waitFor(); // available during the run too
+  // The advertiser table fills in as the run goes.
+  await p.locator('#advrows tbody tr', { hasText: 'Data Broker One' }).waitFor();
+  assert.match(await p.locator('#advrows tbody tr', { hasText: 'Data Broker One' }).textContent(), /✅ disabled · remembered/);
   let r = await report(page);
   assert.match(r.lists.text, /3 disabled, 1 needed no change, 1 had no list controls, 1 failed \(of 6\)/);
   assert.equal(listuse(), 5);
@@ -289,16 +299,28 @@ test('progress bars, advertiser details CSV, saved log and remembered advertiser
   const brokenRow = rows.find((x) => x.name === 'Broken Page Ltd');
   assert.equal(brokenRow.result, 'failed');
   assert.match(brokenRow.error, /This page isn’t available right now/);
+  // With details wanted, the advertiser whose ads are hidden already is opened too, and left as it is.
   assert.deepEqual(rows.filter((x) => x.task === 'seen').map((x) => `${x.name}:${x.result}`).sort(),
-    ['Acme:ads hidden', 'Globex:ads hidden', 'Hooli:ads hidden', 'Initech:ads hidden', 'Umbrella:ads hidden']);
+    ['Acme:ads hidden', 'Globex:ads hidden', 'Hooli:already hidden', 'Initech:ads hidden', 'Umbrella:ads hidden']);
+  const acme = rows.find((x) => x.name === 'Acme');
+  assert.deepEqual([acme.category, acme.about, acme.followers, acme.website],
+    ['Retail company', 'We make things for Acme', '1,234 followers', 'http://acme.example/']);
+  assert.equal(rows.find((x) => x.name === 'Hooli').followers, '3,231,099 followers');
+  assert.equal(broker.remembered, 'yes');
+  assert.deepEqual(events.filter((e) => e.type === 'decoy'), []);
 
   // Issue 2: the log as a file.
   const logFile = await saved(page, 'savelog');
   assert.match(logFile.file, /^fb-ad-disable-log-[\d-]+\.txt$/);
-  assert.match(logFile.text, /^fb-ad-disable 1\.2\.2 log\n/);
+  assert.match(logFile.text, /^fb-ad-disable 1\.3\.0 log\n/);
   assert.match(logFile.text, /Options: \{.*"saveLog":true/);
   assert.match(logFile.text, /\d\d:\d\d:\d\d   6 advertisers found, 6 to process/);
   assert.match(logFile.text, /\d\d:\d\d:\d\d Finished\.\n$/);
+  // One formatted line per advertiser, as it is processed.
+  assert.match(logFile.text, /\[1\/6\] Data Broker One · Showing ads to you using a list: allowed \| Excluding you from ads using a list: allowed → disabled, remembered\n/);
+  assert.match(logFile.text, /\[6\/6\] Broken Page Ltd → failed: Facebook showed “This page isn’t available right now”\n/);
+  assert.match(logFile.text, /\[1\/5\] Acme · Retail company · 1,234 followers · http:\/\/acme\.example\/ → ads hidden\n/);
+  assert.match(logFile.text, /\[5\/5\] Hooli · Internet company · 3,231,099 followers · http:\/\/hooli\.example\/ → already hidden\n/);
 
   // Issue 1: advertisers the page confirmed as disabled are remembered and skipped next time.
   await p.locator('button[name="menu"]').click();
@@ -316,7 +338,8 @@ test('progress bars, advertiser details CSV, saved log and remembered advertiser
   r = await report(page);
   assert.match(r.lists.text, /3 disabled, 1 needed no change, 1 had no list controls, 1 failed \(of 6\)/);
   assert.equal(listuse(), 10);
-  assert.equal(await p.locator('#advertisers').count(), 0, 'no table unless the option is on');
+  assert.equal(await p.locator('#advertisers tbody tr').count(), 6, 'the table is always there');
+  assert.equal(await p.locator('button[name="csv"]').count(), 0, 'exporting it is the option');
 
   // The list can be forgotten.
   await p.locator('button[name="menu"]').click();
@@ -406,6 +429,24 @@ for (const [listMode, said] of [['press', /another way \(press\)/], ['direct', /
     await context.close();
   });
 }
+
+test('Facebook\'s own error instead of the advertiser list is reported as such, quickly', async () => {
+  const context = await browser.newContext();
+  const events = await mockFacebook(context, { inject: true, listMode: 'error' });
+  await fakeUserscriptApi(context);
+  const page = await context.newPage();
+  await page.goto('https://www.facebook.com/settings/');
+  await page.evaluate(() => window.__openMenu());
+  const began = Date.now();
+  await configureAndStart(page, { tasks: ['lists'] });
+  const r = await report(page);
+  assert.equal(r.lists.status, 'manual');
+  assert.match(r.lists.text, /Facebook showed “Something went wrong” instead of the list of advertisers/);
+  assert.match(r.lists.text, /by hand/);
+  assert.ok(Date.now() - began < 25000, 'no long waits for a list that is not coming');
+  assert.deepEqual(events, []);
+  await context.close();
+});
 
 test('when Facebook opens no advertiser at all, the run says so and moves on', async () => {
   const context = await browser.newContext();

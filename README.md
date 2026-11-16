@@ -71,7 +71,7 @@ Console mode is fine for a single task such as *Disable list-based advertisers*,
 | **Dry run** | Report what would change without changing anything. |
 | **Remember processed advertisers** (on) | Keep a list of the list-based advertisers confirmed as disabled, for later runs. |
 | **Skip remembered advertisers** (on) | Only process advertisers that are new since earlier runs. The menu shows how many are remembered, with **Forget them** to clear the list. |
-| **Save advertiser details** (off) | Build a table of every advertiser processed, to export as CSV from the report. |
+| **Save advertiser details** (off) | Keep everything Facebook shows about each advertiser and add CSV export to the report. The advertiser table itself is always shown. |
 | **Save logs** (off) | Keep the full log and add **Copy log** and **Save log** buttons. |
 | **Speed** | Pause between clicks. Use *Slow* if steps fail on a slow connection. |
 
@@ -81,6 +81,8 @@ Console mode is fine for a single task such as *Disable list-based advertisers*,
 
 - The **top bar** is overall progress: the step number, the percentage done and the estimated time left.
 - A **second bar** appears while advertisers are being processed. The script first opens the whole advertiser list to count it, then fills the bar as it works through them. When the advertisers are done the bar disappears.
+- An **advertiser table** fills in under the bars, one row per advertiser as it is handled: its name, what Facebook says about it (category and followers, or how many list uses were still allowed), and the result: ✅ disabled or ads hidden, ☑️ no change needed or already hidden, ⏭ skipped because remembered, 👁 what a dry run would do, ⚠️ failed. "remembered" marks an advertiser that was added to the remembered list. Hover over a row for the rest of its details.
+- The **log** gets one line per advertiser in the same order, for example `[12/215] Acme · Retail company · 1,234 followers · http://acme.example/ → ads hidden`.
 - **Time left** is estimated from how fast the run is actually going: the average time per step so far, and the average time per advertiser. It is rough at the start and improves as the run proceeds. Until an advertiser list has been counted, the estimate says "plus advertisers not counted yet".
 - **Stop** ends the run after the current click. If a run is interrupted, opening the menu again offers **Resume it**.
 
@@ -114,12 +116,15 @@ With **Remember processed advertisers** on, each list-based advertiser is added 
 
 ### Advertiser details (CSV)
 
-With **Save advertiser details** on, the report shows a table of every advertiser processed, with **Export CSV** (saves a file) and **Copy CSV**. The file has one row per advertiser and these columns:
+The report always shows the advertiser table. With **Save advertiser details** on, it also has **Export CSV** (saves a file) and **Copy CSV**, the full text of each advertiser's page is kept, and advertisers whose ads are already hidden are opened too so their details can be read. The file has one row per advertiser and these columns:
 
 | Column | Content |
 | --- | --- |
 | `task` | `list-based` or `seen` |
 | `name` | Advertiser name as shown in the list |
+| `category`, `about` | What the advertiser's panel says it is, for example "Food & beverage company", and its description |
+| `followers`, `website` | As shown in the advertiser's panel |
+| `remembered` | `yes` when the advertiser is on the remembered list |
 | `advertiser_id` | The id in the advertiser's link, when there is one |
 | `result` | `disabled`, `no change needed`, `ads hidden`, `failed`, `skipped (remembered…)`, or what a dry run would do |
 | `action` | What was clicked |
@@ -143,8 +148,8 @@ With **Save logs** on, **Copy log** and **Save log** appear during the run and i
 | Task | Where | What happens |
 | --- | --- | --- |
 | **Disable list-based advertisers** | Accounts Center → Ad preferences → Manage info → Audience-based advertising | For every advertiser: open it → *They uploaded or used a list to reach you* → **Don't allow**, for both showing you ads and excluding you from ads. This is the original script this project grew from. See the note below. |
-| **Hide advertisers you have seen** | Ad preferences → Advertisers you saw ads from | Opens each advertiser in the list and clicks **Hide ads**. |
-| **Restrict ad data settings** | Ad preferences → Manage info | *Activity from other businesses* (formerly "Activity information from ad partners") → not using this information · *Categories used to reach you* → all off · *Ads in other apps* (under "Ads shown outside of Meta") → not showing · *Ads about Meta* → not using your activity · *Social interactions* → Only me. A row that already says so ("Not using this information") is left untouched. |
+| **Hide advertisers you have seen** | Ad preferences → Advertisers you saw ads from | Opens each advertiser in the list and clicks **Hide ads**. Advertisers the list marks "You hid their ads" are counted as already hidden and left alone. |
+| **Restrict ad data settings** | Ad preferences → Manage info | *Activity from other businesses* (formerly "Activity information from ad partners") → not using this information · *Categories used to reach you* → employer, job title, education and relationship status set to not used, other categories removed · *Ads in other apps* (under "Ads shown outside of Meta") → not showing · *Ads about Meta* → not using your activity · *Social interactions* → Only me. A row that already says so ("Not using this information") is left untouched. |
 | **Clear off-Meta activity history** | Accounts Center → Your information and permissions → Your activity off Meta technologies | **Clear previous activity**. See the note below. |
 | **Disconnect future off-Meta activity** (off by default; Max ticks it) | same page | *Manage future activity* → **Disconnect future activity**. Side effect: "Log in with Facebook" on other sites and apps stops working. See the note below. |
 | **Ad topics: See less** (experimental, off by default) | Ad preferences → Customize ads → Ad topics → See all | Opens each topic and picks **See less**. |
@@ -160,9 +165,11 @@ Facebook answers an advertiser with "This page isn't available right now" unless
 
 If no way works, the step is reported for manual follow-up and the run carries on with the other tasks. In that case open one advertiser by hand: if Facebook shows you the error page too, the fault is on Facebook's side.
 
+The list itself can fail the same way: Facebook sometimes shows "Something went wrong. Please try again later." where the list should be. The report then says so in those words. Nothing in the script can get past that; try the task again later.
+
 ### Off-Meta activity is being retired
 
-Meta has been removing "Your activity off Meta technologies" for accounts in the US and other countries since mid-2026 and folding it into **Activity from other businesses**. On such an account the old page says "This content isn't available right now", and the two off-Meta tasks report "Nothing to do" and say why. The setting that replaces them is covered by **Restrict ad data settings**. Where the old setting still exists, the tasks work as described.
+Meta has been removing "Your activity off Meta technologies" for accounts in the US and other countries since mid-2026 and folding it into **Activity from other businesses**. On such an account the old page says "This content isn't available right now". The two off-Meta tasks then look inside **Activity from other businesses** for something to clear or disconnect, and when there is nothing they report "Nothing to do", say why, and record what that page showed. The setting that replaces them is covered by **Restrict ad data settings**. Where the old setting still exists, the tasks work as described.
 
 ### AI features: what can and cannot be switched off
 

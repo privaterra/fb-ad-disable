@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FB Ad Disable & Privacy Hardener
 // @namespace    https://github.com/privaterra/fb-ad-disable
-// @version      1.2.2
+// @version      1.3.0
 // @description  Opt out of advertiser lists, restrict ad data use and tighten Facebook privacy settings from one menu.
 // @license      MIT
 // @match        https://www.facebook.com/*
@@ -30,7 +30,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.2.2';
+  const VERSION = '1.3.0';
   const TAG = '[fb-ad-disable]';
   const KEY = 'fbAdDisableState';
   const MEMORY_KEY = 'fbAdDisableAdvertisers';
@@ -64,7 +64,9 @@
     close: { en: ['close'], pt: ['fechar'] },
     hideAds: { en: ['hide ads', 'hide ads from this advertiser', 'hide all ads from this advertiser'], pt: ['ocultar anúncios'] },
     confirm: { en: ['save', 'done', 'confirm', 'save changes'], pt: ['salvar', 'concluir', 'confirmar'] },
-    unavailable: { en: ["this page isn't available right now", "this content isn't available right now"] },
+    unavailable: { en: ["this page isn't available right now", "this content isn't available right now", 'something went wrong'] },
+    unhide: { en: ['unhide', 'unhide ads', 'show ads'] },
+    hidden: { en: ['you hid their ads', 'you chose to hide all ads'] },
     on: { en: ['on', 'yes', 'enabled'] },
     off: { en: ['off', 'no', 'disabled'] },
   };
@@ -114,7 +116,8 @@
       all: ["no, don't make my ads more relevant*", "don't use*", 'not using*', "no, don't use*"], confirm: ['confirm', 'save', 'done'],
       say: 'not using this information' },
     { id: 'ad_categories', title: 'Categories used to reach you', url: ADS, tab: AD_TAB,
-      row: ['categories used to reach you'], all: 'alloff' },
+      row: ['categories used to reach you'], custom: 'adCategories', all: true,
+      say: '“Not used” for employer, job title, education and relationship status, with the other categories removed' },
     { id: 'ad_outside', title: 'Ads in other apps (ads shown outside of Meta)', url: ADS, tab: AD_TAB,
       row: ['ads in other apps', 'ads from ad partners', 'ads shown off of meta', 'ads shown off meta', 'ads shown outside of meta'],
       already: ['not showing you ads in other apps'],
@@ -624,16 +627,57 @@
   // ---------------------------------------------------------------------------
   // Advertiser details, CSV, time estimate
   // ---------------------------------------------------------------------------
-  const CSV_COLUMNS = ['task', 'name', 'advertiser_id', 'result', 'action', 'list_uses', 'link', 'facebook_page',
-    'list_text', 'detail_text', 'error', 'processed_at', 'dry_run'];
+  const CSV_COLUMNS = ['task', 'name', 'category', 'about', 'followers', 'website', 'advertiser_id', 'result', 'action', 'remembered',
+    'list_uses', 'link', 'facebook_page', 'list_text', 'detail_text', 'error', 'processed_at', 'dry_run'];
 
   const clip = (s, n) => (s || '').replace(/\s+/g, ' ').trim().slice(0, n);
 
-  // One row of the advertiser details table (only kept when the option is on).
-  function record(rec) {
-    if (!state.opts.saveInfo) return;
-    state.records.push({ ...rec, processed_at: new Date().toISOString(), dry_run: state.opts.dryRun ? 'yes' : 'no' });
+  // The first piece of text in an element: a list entry's name without its status line.
+  function firstText(el) {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const text = clip(n.nodeValue, 80);
+      if (text.length > 1) return text;
+    }
+    return clip(el.textContent, 80);
   }
+
+  // What an open advertiser panel says about the advertiser: the lines between its heading
+  // and the ad controls, sorted into category, description, followers and website.
+  function advertiserInfo(root) {
+    const stop = [...t('hideAds'), ...t('unhide'), ...t('hidden'), ...t('theyUploaded'), ...t('dontAllow'), 'ads from this advertiser'];
+    const lines = [];
+    let name = '';
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n && lines.length < 12; n = walker.nextNode()) {
+      const el = n.parentElement;
+      const text = clip(n.nodeValue, 140);
+      if (text.length < 2 || !el || /^(SCRIPT|STYLE|NOSCRIPT)$/.test(el.tagName) || !visible(el)) continue;
+      if (!name) { if (el.closest('h1,h2,[role="heading"]')) name = text; continue; }
+      if (hit(norm(text), stop, 'includes')) break;
+      if (!lines.includes(text)) lines.push(text);
+    }
+    const followers = lines.find((x) => /\d/.test(x) && /\b(followers?|likes?|members?)\b/i.test(x)) || '';
+    const website = lines.find((x) => /^(https?:\/\/|www\.)\S+$/i.test(x)) || '';
+    const label = /^(facebook page|instagram( account| profile)?|website|page|profile|learn more)$/i;
+    const rest = lines.filter((x) => x !== followers && x !== website && !label.test(x));
+    return { name, category: rest[0] || '', about: rest.slice(1, 3).join(' / '), followers, website };
+  }
+
+  // One row of the advertiser table: shown as the run goes, and in the report. The long texts
+  // are only kept when "Save advertiser details" is on.
+  function record(rec) {
+    const row = { ...rec, processed_at: new Date().toISOString(), dry_run: state.opts.dryRun ? 'yes' : 'no' };
+    if (!state.opts.saveInfo) { delete row.detail_text; delete row.list_text; }
+    state.records.push(row);
+    ui.advertiserRow(row);
+    return row;
+  }
+
+  // "  [ 12/215] Name · category · followers · website → result"
+  const advLine = (rec, n, total) => `  [${String(n).padStart(String(total).length)}/${total}] ` +
+    [rec.name, rec.category, rec.followers, rec.website, rec.list_uses].filter(Boolean).join(' · ') +
+    ` → ${rec.result}${rec.remembered ? ', remembered' : ''}${rec.error ? ': ' + rec.error : ''}`;
 
   function toCsv(rows) {
     const cell = (v) => {
@@ -833,15 +877,17 @@
       const buttons = () => findText([...t('dontAllow'), ...t('allow')])[0];
       const first = await waitFor(() => uploadedRow() || (broken() && 'broken') || buttons(), 8000).catch(() => null);
       if (first === 'broken') throw new Broken(NOT_SHOWN);
-      if (o.saveInfo) { // the advertiser's panel, or its page when it opened as one
+      { // the advertiser's panel, or its page when it opened as one
         const box = topLayer() || document.querySelector('[role="main"]') || document.body;
+        const info = advertiserInfo(box);
+        Object.assign(rec, { about: [info.category, info.about].filter(Boolean).join(' / '), followers: info.followers, website: info.website });
         rec.detail_text = clip(box.innerText, 1000);
         rec.facebook_page = [...box.querySelectorAll('a[href]')].map((a) => a.href)
           .find((x) => !x.includes(base) && !/accountscenter\.facebook\.com/.test(x)) || '';
       }
       const uploaded = uploadedRow();
       if (uploaded) { click(uploaded); nav.depth++; await settle(); }
-      if (o.saveInfo) rec.list_uses = listUses();
+      rec.list_uses = listUses();
 
       let clicks = 0, prev = -1;
       for (let pass = 0; pass < 2; pass++) {
@@ -865,13 +911,11 @@
         ls.ok++;
         tally.dry++;
         rec.result = 'would be disabled (dry run)';
-        log(`  would disable: ${name}`);
       } else if (out.error) {
         tally.failed++;
         rec.result = 'failed';
         rec.error = out.error.message;
         state.listsSeen = state.listsSeen || snapshot();
-        log(`  ${name}: ${out.error.message}`);
       } else {
         ls.ok++;
         if (out.clicks) {
@@ -881,21 +925,21 @@
         } else if (out.confirmed) {
           tally.none++;
           rec.result = 'no change needed';
-          log(`  ${name}: nothing to change`);
         } else { // neither "Don't allow" nor "Allow": nothing on this page was recognised
           tally.bare++;
           rec.result = 'no list controls found';
           state.listsSeen = state.listsSeen || snapshot();
-          log(`  ${name}: no list controls found`);
         }
       }
       done.add(key);
       state.listsDone = [...done];
-      record(rec);
       if (o.remember && out.confirmed && !o.dryRun) { // a dry run leaves no trace
         known[key] = { name, result: rec.result, at: Date.now() };
         await memory.save(known);
+        rec.remembered = 'yes';
       }
+      record(rec);
+      log(advLine(rec, done.size, Math.max(prog.total, done.size)));
       tick(UNIT, started);
       await save();
       sync();
@@ -945,7 +989,8 @@
     if (ls.way === 'direct') return direct();
 
     // ---- reach the list ----------------------------------------------------------------------
-    let found = await waitFor(() => anchors().length, 6000).catch(() => null);
+    const listOrError = () => anchors().length || (broken() && 'error');
+    let found = await waitFor(listOrError, 6000).catch(() => null);
     if (!found && !/audience_based_advertising/.test(location.pathname)) {
       // The way a person gets there: Ad preferences → Manage info → Audience-based advertising.
       const tab = findText(AD_TAB)[0];
@@ -953,8 +998,15 @@
       const row = await waitFor(() => findRow(['audience-based advertising']), 8000, 'row', 300).catch(() => null);
       if (row) {
         await openRow(row);
-        found = await waitFor(() => anchors().length, 10000).catch(() => null);
+        found = await waitFor(listOrError, 10000).catch(() => null);
       }
+    }
+    if (found === 'error') { // Facebook's own error where the list should be
+      const shown = clip((findText(t('unavailable'), { mode: 'includes' })[0] || {}).textContent, 80);
+      const e = new RowMissing(`Facebook showed “${shown}” instead of the list of advertisers. That is Facebook’s own error and is often temporary: ` +
+        'open Ad preferences → Manage info → Audience-based advertising by hand, and run this task again once the list shows there');
+      e.facebook = true;
+      throw e;
     }
     if (!found) throw new RowMissing('could not find the list of advertisers');
     const home = new URL(location.href);
@@ -1000,7 +1052,7 @@
         done.add(x.key);
         skipped++;
         record({ task: 'list-based', name: known[x.key].name || x.name, advertiser_id: advertiserId(x.href), link: x.href,
-          result: 'skipped (remembered from an earlier run)', action: 'none' });
+          result: 'skipped (remembered from an earlier run)', action: 'none', remembered: 'yes' });
       }
       tally.skipped += skipped;
       state.listsDone = [...done];
@@ -1061,8 +1113,11 @@
   }
 
   // Walks a list one entry at a time: open it, run `action`, come back.
-  // words: how to phrase the result; each(name, outcome) is told about every entry.
-  async function drillList(doneKey, action, { words, each = () => {}, ignore = [] } = {}) {
+  //   action()  -> { status: 'changed' | 'already', info }
+  //   words     - how to phrase the result from the counts
+  //   each()    - told about every entry: (name, outcome, done, total, info, error)
+  //   already() - true for an entry that needs no visit
+  async function drillList(doneKey, action, { words, each = () => {}, ignore = [], already } = {}) {
     const scope = () => topLayer() || document.body;
     const skip = [...t('back'), ...t('close'), ...t('seeAll'), ...t('seeMore'), ...t('confirm'), ...ignore];
     const items = () => {
@@ -1071,10 +1126,11 @@
       // A pop-up whose entries are plain buttons or links.
       return [...scope().querySelectorAll('[role="button"],[role="link"],a[href],[tabindex="0"]')].filter((el) => {
         const text = norm(el.textContent);
-        return visible(el) && text.length > 1 && text.length < 80 && !skip.includes(text) && !skip.includes(norm(el.getAttribute('aria-label')));
+        return visible(el) && text.length > 1 && text.length < 120 && !skip.includes(text) && !skip.includes(norm(el.getAttribute('aria-label')));
       });
     };
-    const keyOf = (el) => norm(el.textContent).slice(0, 80);
+    // An entry is known by its name: its status line ("You hid their ads") changes as the run goes.
+    const keyOf = (el) => norm(firstText(el));
     const done = new Set(state[doneKey] || []);
     const count = state[doneKey + 'Count'] || (state[doneKey + 'Count'] = { changed: 0, dry: 0, same: 0, failed: 0 });
     let fails = 0, seen = '';
@@ -1082,45 +1138,52 @@
     await waitFor(() => items().length, 8000, 'a list on this page');
     const total = () => new Set([...done, ...items().map(keyOf)]).size;
     each(null, null, done.size, total());
-    while (fails < 3 && done.size < 500) {
+    while (fails < 3 && done.size < 1000) {
       check();
       const el = items().find((x) => !done.has(keyOf(x)));
       if (!el) break;
       const key = keyOf(el);
-      const name = clip(el.textContent, 70);
+      const name = firstText(el);
       const size = total();
-      let outcome;
-      try {
-        click(el.querySelector('a,[role="button"],[role="link"]') || el);
-        await settle();
-        const r = await action();
-        if (r.status === 'changed') { count.changed++; outcome = 'changed'; await confirmIf(); } else { count.same++; outcome = 'same'; }
-        fails = 0;
-      } catch (e) {
-        if (e instanceof Abort) throw e;
-        if (e instanceof DryRun) { count.dry++; outcome = 'dry'; fails = 0; } else {
-          count.failed++;
-          outcome = 'failed';
-          fails++;
-          seen = seen || snapshot();
-          log(`  ${name}: ${e.message}`);
+      let outcome, info = {}, error = '';
+      if (already && already(el)) {
+        count.same++;
+        outcome = 'same';
+      } else {
+        try {
+          click(el.querySelector('a,[role="button"],[role="link"]') || el);
+          await settle();
+          const r = await action();
+          info = r.info || {};
+          if (r.status === 'changed') { count.changed++; outcome = 'changed'; await confirmIf(); } else { count.same++; outcome = 'same'; }
+          fails = 0;
+        } catch (e) {
+          if (e instanceof Abort) throw e;
+          info = e.info || {};
+          if (e instanceof DryRun) { count.dry++; outcome = 'dry'; fails = 0; } else {
+            count.failed++;
+            outcome = 'failed';
+            error = e.message;
+            fails++;
+            seen = seen || snapshot();
+          }
         }
+        if (!items().some((x) => keyOf(x) === key)) await goBack(1);
       }
-      if (!items().some((x) => keyOf(x) === key)) await goBack(1);
       done.add(key);
       state[doneKey] = [...done];
-      each(name, outcome, done.size, Math.max(size, done.size));
+      each(name, outcome, done.size, Math.max(size, done.size), info, error);
       await save();
     }
-    const said = words || { dry: (n) => `${n} would be changed`, done: (n) => `${n} changed of ${done.size}` };
+    const said = words || { dry: (c) => `${c.dry} would be changed`, done: (c) => `${c.changed} changed of ${done.size}` };
     if (fails >= 3 && !(count.changed + count.dry + count.same)) {
       const e = new Error('none of the entries in the list could be handled');
       e.seen = seen;
       throw e;
     }
     const failed = count.failed ? `, ${count.failed} could not be handled` : '';
-    if (state.opts.dryRun) return { status: 'dry', detail: said.dry(count.dry) + failed, seen };
-    return { status: count.changed ? 'changed' : 'already', detail: said.done(count.changed) + failed, seen };
+    if (state.opts.dryRun) return { status: 'dry', detail: said.dry(count) + failed, seen };
+    return { status: count.changed ? 'changed' : 'already', detail: said.done(count) + failed, seen };
   }
 
   // "Hide ads" for every advertiser Facebook lists.
@@ -1159,10 +1222,10 @@
         dry++;
         rec.result = 'would be hidden (dry run)';
       }
-      record(rec);
-      tick('seen', started);
       prog.done++;
       prog.total = Math.max(prog.total, prog.done);
+      log(advLine(record(rec), prog.done, prog.total));
+      tick('seen', started);
       ui.advertisers(prog);
       eta();
     }
@@ -1173,21 +1236,32 @@
       findText(['advertisers you saw ads from', "advertisers you've seen", 'advertisers you have seen'], { mode: 'includes' }).length > 0;
     if (!listed) throw new Error('the advertisers list was not found');
     let last = Date.now();
+    const same = (c) => (c.same ? `, ${c.same} already hidden` : '');
     return drillList('seenDone', async () => {
-      const btn = await waitFor(() => findText(t('hideAds'))[0], 4000, '“Hide ads”');
-      act(btn, 'hide ads');
+      // An advertiser's panel has "Hide ads", or "Unhide" when its ads are hidden already.
+      const btn = await waitFor(() => findText(t('hideAds'))[0] || findText(t('unhide'))[0], 5000, '“Hide ads”');
+      const info = advertiserInfo(topLayer() || document.body);
+      if (!hit(ownText(btn), t('hideAds'), 'exact')) return { status: 'already', info };
+      try { act(btn, `hide ads from ${info.name || 'this advertiser'}`); } catch (e) { e.info = info; throw e; }
       await settle();
-      return { status: 'changed' };
+      return { status: 'changed', info };
     }, {
       ignore: ['all advertisers', 'all accounts'], // the filters above the list
-      words: { dry: (n) => `${n} advertisers would be hidden`, done: (n) => `${n} advertisers hidden` },
-      each: (name, outcome, did, total) => {
+      // The list already says which advertisers are hidden. They are only opened when their details are wanted.
+      already: state.opts.saveInfo ? null : (el) => hit(norm(el.textContent), t('hidden'), 'includes'),
+      words: {
+        dry: (c) => `${c.dry} advertisers would be hidden${same(c)}`,
+        done: (c) => `${c.changed} advertisers hidden${same(c)}`,
+      },
+      each: (name, outcome, did, total, info, error) => {
         prog.done = did;
         prog.total = Math.max(prog.total, total);
         ui.advertisers(prog);
         if (name) {
-          record({ task: 'seen', name, action: outcome === 'changed' ? 'clicked “Hide ads”' : 'none',
-            result: { changed: 'ads hidden', dry: 'would be hidden (dry run)', same: 'no change needed', failed: 'failed' }[outcome] });
+          const rec = record({ task: 'seen', name: (info && info.name) || name, category: info.category, about: info.about,
+            followers: info.followers, website: info.website, error, action: outcome === 'changed' ? 'clicked “Hide ads”' : 'none',
+            result: { changed: 'ads hidden', dry: 'would be hidden (dry run)', same: 'already hidden', failed: 'failed' }[outcome] });
+          log(advLine(rec, did, prog.total));
           tick('seen', last);
         }
         last = Date.now();
@@ -1205,7 +1279,7 @@
     const all = rowButton(label, [...t('seeAll'), 'view and manage topics', 'see all topics']); // "See all" next to it
     await openRow(all || label);
     return drillList('topicsDone', () => choose(['see less'], 'exact', 4000),
-      { words: { dry: (n) => `${n} topics would be set to “See less”`, done: (n) => `${n} topics set to “See less”` } });
+      { words: { dry: (c) => `${c.dry} topics would be set to “See less”`, done: (c) => `${c.changed} topics set to “See less”` } });
   }
 
   // Finds a row, walking down the Accounts Center menus to it when it is not on screen yet.
@@ -1224,10 +1298,11 @@
   }
 
   const OFF_META_PATH = [['your information and permissions'],
-    ['your activity off meta technologies', 'activity off meta', 'off-meta activity', 'off-facebook activity']];
+    ['your activity off meta technologies', 'activity off meta', 'off-meta activity', 'off-facebook activity'],
+    ['activity from other businesses']]; // what Meta is folding it into
 
   async function runOffClear() {
-    const row = await reach(['clear previous activity', 'clear history'], OFF_META_PATH, '“Clear previous activity”');
+    const row = await reach(['clear previous activity', 'clear history', 'clear activity', 'disconnect previous activity'], OFF_META_PATH, '“Clear previous activity”');
     if (!(await openRow(row))) throw new Error('the confirmation did not open');
     const btn = findText(['clear previous activity', 'clear history', 'clear']).filter((el) => el !== row).pop();
     if (!btn) throw new Error('the “Clear” button was not found');
@@ -1237,7 +1312,7 @@
   }
 
   async function runOffFuture() {
-    const row = await reach(['manage future activity'], OFF_META_PATH, '“Manage future activity”');
+    const row = await reach(['manage future activity', 'disconnect future activity', 'future activity'], OFF_META_PATH, '“Manage future activity”');
     await openRow(row);
     const again = findText(['manage future activity']).filter((el) => el !== row).pop(); // explainer screen
     if (again) await openRow(again);
@@ -1289,7 +1364,55 @@
       : { status: 'already', detail: `${seen.size} AI switch${seen.size > 1 ? 'es' : ''} already off` };
   }
 
-  const CUSTOM = { pastPosts };
+  // "Categories used to reach you": one row per profile field (employer, job title, education,
+  // relationship status) that says whether it is used, and a list of other categories to remove.
+  async function adCategories() {
+    const tab = findText(AD_TAB)[0];
+    if (tab) { click(tab); await settle(); }
+    const row = await waitFor(() => findRow(['categories used to reach you']), 10000, 'row', 300).catch(() => null);
+    if (!row) throw new RowMissing('could not find the “Categories used to reach you” row');
+    if (!(await openRow(row))) throw new Error('the setting did not open');
+    const layer = () => topLayer() || document.body;
+    if (switchesIn(layer()).length) return allSwitchesOff(); // older layout: one switch per category
+
+    const FIELDS = ['employer', 'job title', 'education', 'relationship status'];
+    const OFF = ['not used', 'unspecified', 'not using', 'off'];
+    const notes = [];
+    let changed = 0, found = 0;
+    for (const field of FIELDS) {
+      check();
+      const label = searchText(layer(), [field], 'exact')[0];
+      if (!label) continue;
+      found++;
+      const holder = label.closest('[role="button"],[role="link"],[role="listitem"]') || label.parentElement;
+      const status = norm(holder.textContent).replace(field, '').trim();
+      if (OFF.some((x) => status.includes(x))) { notes.push(`${field}: ${status}`); continue; }
+      // In use, or the row does not say: open it and switch it off.
+      await openRow(label);
+      const inside = topLayer();
+      const only = inside ? switchesIn(inside) : [];
+      const r = only.length === 1 ? await setSwitch(only[0], false)
+        : await choose(["don't use*", 'do not use*', 'not used', 'no', 'off'], 'exact', 5000);
+      if (r.status === 'changed') { changed++; await confirmIf(); }
+      notes.push(`${field}: ${r.status === 'changed' ? 'switched off' : 'not used'}`);
+      if (FIELDS.filter((f) => searchText(layer(), [f], 'exact').length).length < 2) await goBack(1); // back to the list of fields
+    }
+    // "Categories associated with you": each one has a Remove button.
+    let removed = 0;
+    for (let i = 0; i < 60; i++) {
+      const btn = searchText(layer(), ['remove'], 'exact')[0];
+      if (!btn) break;
+      act(btn, 'remove a category associated with you');
+      removed++;
+      await settle();
+      await confirmIf();
+    }
+    if (!found && !removed) throw new Error('the setting opened, but none of its rows were recognised');
+    if (removed) notes.push(`${removed} other categories removed`);
+    return { status: changed + removed ? 'changed' : 'already', detail: notes.join(' · ') };
+  }
+
+  const CUSTOM = { pastPosts, adCategories };
 
   function buildUnits(o) {
     const units = [];
@@ -1311,10 +1434,11 @@
     if (on('topics')) units.push({ id: 'topics', title: 'Ad topics: See less', url: ADS,
       manual: 'On the “Customize ads” tab, click “See all” next to “Ad topics”, then choose “See less” for each topic.', run: runTopics });
     const gone = 'Facebook does not offer this on your account. Meta is replacing it with “Activity from other businesses”, which the ad data task sets';
+    const offPath = 'Accounts Center → Your information and permissions → Your activity off Meta technologies (or “Activity from other businesses”)';
     if (on('offclear')) units.push({ id: 'offclear', title: 'Clear off-Meta activity history', optional: true, gone, ...where('offclear', offMeta),
-      manual: 'Accounts Center → Your information and permissions → Your activity off Meta technologies → “Clear previous activity”, then confirm.', run: runOffClear });
+      manual: `${offPath} → “Clear previous activity”, then confirm.`, run: runOffClear });
     if (on('offfuture')) units.push({ id: 'offfuture', title: 'Disconnect future off-Meta activity', optional: true, gone, ...where('offfuture', offMeta),
-      manual: 'Accounts Center → Your information and permissions → Your activity off Meta technologies → “Manage future activity” → “Disconnect future activity”, then confirm.', run: runOffFuture });
+      manual: `${offPath} → “Manage future activity” → “Disconnect future activity”, then confirm.`, run: runOffFuture });
     if (on('ai')) {
       for (const s of AI_SETTINGS) units.push(setting(s, s.all));
       for (const tab of AI_SCAN) units.push({ id: 'ai_scan_' + tab, title: `AI switches on the “${tab}” settings page`, url: TAB[tab],
@@ -1368,14 +1492,18 @@
               if ((state.renav[unit.id] = (state.renav[unit.id] || 0) + 1) <= 2) await hardNav(unit);
             }
             const tried = state.altSeen[unit.id] || (state.altSeen[unit.id] = []);
+            if (e.facebook) state.altWhy[unit.id] = e.message; // Facebook's own error says more than "not found"
             if (e instanceof RowMissing && unit.next) { // Facebook may keep this row on another page
               tried.push(snapshot());
               state.alt[unit.id] = (state.alt[unit.id] || 0) + 1;
               log('  not on this page, trying the next one');
               await closeLayers();
               units = buildUnits(state.opts);
+              // The address bar can already show the next address while the page is still the old one: load it for real.
+              if (at(units[state.idx].url)) await hardNav(units[state.idx]);
               continue;
             }
+            if (state.altWhy[unit.id] && e instanceof RowMissing) e.message = state.altWhy[unit.id];
             const seen = [...tried, e.seen || snapshot()].join(' || ').slice(0, 6000);
             if (e instanceof DryRun) res = { status: 'dry', detail: 'would ' + e.message };
             else if (e instanceof RowMissing && unit.optional) res = { status: 'info', detail: unit.gone || 'this setting is not shown for your account', seen };
@@ -1430,6 +1558,7 @@
     st.adv = st.adv || {};
     st.alt = st.alt || {};
     st.altSeen = st.altSeen || {};
+    st.altWhy = st.altWhy || {};
     st.renavAt = st.renavAt || {};
     st.reloads = st.reloads || {};
     st.timing = st.timing || { unitMs: 0, units: 0, adv: {} };
@@ -1532,12 +1661,15 @@
     .cap { display: flex; justify-content: space-between; gap: 8px; color: #5b6570; font-size: 12px; }
     [hidden] { display: none !important; }
     .scroll { max-height: 180px; overflow: auto; margin-top: 6px; }
+    .rows { max-height: 150px; }
+    pre { height: 160px; }
     table { width: 100%; border-collapse: collapse; font-size: 12px; }
     th, td { text-align: left; padding: 3px 8px 3px 0; border-bottom: 1px solid #e3e6ea; vertical-align: top; }
+    th { position: sticky; top: 0; background: #fff; }
     button.link { background: none; border: 0; padding: 0; margin-left: 6px; color: #0b5cad; font: inherit; cursor: pointer; text-decoration: underline; }
     .step { font-weight: 600; }
     .sub { color: #5b6570; font-size: 12px; min-height: 1.4em; }
-    pre { margin: 8px 0 0; padding: 8px; height: 220px; overflow: auto; border-radius: 6px; background: #f1f3f5; color: #1c1e21;
+    pre { margin: 8px 0 0; padding: 8px; overflow: auto; border-radius: 6px; background: #f1f3f5; color: #1c1e21;
       font: 11px/1.45 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
     ul { list-style: none; margin: 0; padding: 0; }
     li { padding: 6px 0; border-bottom: 1px solid #e3e6ea; }
@@ -1550,6 +1682,7 @@
       .panel { background: #1f2328; color: #e6e8eb; border-color: #3a4048; }
       h3, label.opt em, .sub, li div, li details, .cap { color: #9aa4af; }
       th, td { border-color: #3a4048; }
+      th { background: #1f2328; }
       button.link { color: #7db8f0; }
       button.b { background: #2c323a; border-color: #454d57; color: #e6e8eb; }
       button.b.primary { background: #2f6ea3; border-color: #2f6ea3; }
@@ -1561,7 +1694,7 @@
     }`;
 
   const ui = (() => {
-    let host, root, body, logEl, stepEl, subEl, barEl, pctEl, etaEl, advBox, advLabel, advBar, ticker;
+    let host, root, body, logEl, stepEl, subEl, barEl, pctEl, etaEl, advBox, advLabel, advBar, rowsBox, rowsBody, ticker;
     let cur = { i: 0, n: 1 };
     let left = null; // { ms, unknown, at }
 
@@ -1669,7 +1802,7 @@
         option('skipKnown', pref('skipKnown', true), 'Skip remembered advertisers',
           'Only process advertisers that are new since earlier runs.', known),
         option('saveInfo', pref('saveInfo', false), 'Save advertiser details',
-          'Build a table with the details of every advertiser processed, to export as CSV at the end.'),
+          'Keep everything Facebook shows about each advertiser and add CSV export to the report. Advertisers whose ads are already hidden are opened too, to read their details.'),
         option('saveLog', pref('saveLog', false), 'Save logs',
           'Keep the full log and add buttons to copy it or save it to a file.'),
         h('div', { class: 'row' }, 'Speed', speed),
@@ -1694,6 +1827,21 @@
       pctEl.textContent = pct + '%';
     }
 
+    // One line of the advertiser table: who, what Facebook says about them, what happened.
+    const mark = (r) => (/failed|no list controls/.test(r.result) ? '⚠️' : /^would/.test(r.result) ? '👁' : /^skipped/.test(r.result) ? '⏭'
+      : /^(disabled|ads hidden)/.test(r.result) ? '✅' : '☑️');
+    // "2 list uses, 1 still allowed": what the advertiser's page said before anything was clicked.
+    const uses = (r) => {
+      if (!r.list_uses) return '';
+      const all = r.list_uses.split(' | ');
+      return `${all.length} list use${all.length > 1 ? 's' : ''}, ${all.filter((x) => /: allowed$/.test(x)).length} allowed`;
+    };
+    const advRow = (r) => h('tr', { title: [r.error, r.about, r.website, r.list_uses].filter(Boolean).join(' · ') },
+      h('td', null, r.name),
+      h('td', null, [r.category, r.followers, uses(r)].filter(Boolean).join(' · ')),
+      h('td', null, `${mark(r)} ${r.result}${r.remembered && !/^skipped/.test(r.result) ? ' · remembered' : ''}`));
+    const advHead = () => h('thead', null, h('tr', null, h('th', null, 'Advertiser'), h('th', null, 'Details'), h('th', null, 'Result')));
+
     function showRun() {
       mount();
       stepEl = h('div', { class: 'step', id: 'step' }, 'Starting…');
@@ -1706,13 +1854,17 @@
         h('div', { class: 'bar adv', role: 'progressbar', 'aria-label': 'Advertisers' }, advBar), h('div', { class: 'cap' }, advLabel));
       subEl = h('div', { class: 'sub' });
       logEl = h('pre', null, state.log.join('\n'));
+      // Advertisers as they are processed (the last 300 after a page load).
+      rowsBody = h('tbody', null, state.records.slice(-300).map(advRow));
+      rowsBox = h('div', { class: 'scroll rows', id: 'advrows', hidden: !state.records.length }, h('table', null, advHead(), rowsBody));
       fill(stepEl,
         h('div', { class: 'bar', role: 'progressbar', 'aria-label': 'Overall progress' }, barEl),
         h('div', { class: 'cap' }, etaEl, pctEl),
-        advBox, subEl, logEl,
+        advBox, rowsBox, subEl, logEl,
         h('div', { class: 'btns' }, h('button', { class: 'b danger', name: 'stop',
           onclick: () => { stopRequested = true; stepEl.textContent = 'Stopping…'; } }, 'Stop'), logButtons()));
       logEl.scrollTop = logEl.scrollHeight;
+      rowsBox.scrollTop = rowsBox.scrollHeight;
       ticker = setInterval(paintEta, 1000);
     }
 
@@ -1725,14 +1877,13 @@
         r.status === 'manual' ? h('div', null, r.manual + ' ', h('a', { href: r.url, target: '_blank', rel: 'noopener' }, 'Open page')) : null,
         r.seen ? h('details', null, h('summary', null, 'What the page showed'), r.seen) : null));
       const rows = state.records || [];
-      const details = state.opts.saveInfo ? [
-        h('h3', null, `Advertiser details (${rows.length})`),
-        h('div', { class: 'scroll' }, h('table', { id: 'advertisers' },
-          h('thead', null, h('tr', null, h('th', null, 'Advertiser'), h('th', null, 'Task'), h('th', null, 'Result'))),
-          h('tbody', null, rows.map((r) => h('tr', null, h('td', null, r.name), h('td', null, r.task), h('td', null, r.result)))))),
-        h('div', { class: 'btns' },
+      // The advertiser table is always shown; exporting it with the full details is the option.
+      const details = rows.length ? [
+        h('h3', null, `Advertisers (${rows.length})`),
+        h('div', { class: 'scroll' }, h('table', { id: 'advertisers' }, advHead(), h('tbody', null, rows.map(advRow)))),
+        state.opts.saveInfo ? h('div', { class: 'btns' },
           h('button', { class: 'b', name: 'csv', onclick: () => download(`fb-ad-disable-advertisers-${fileStamp()}.csv`, toCsv(rows), 'text/csv') }, 'Export CSV'),
-          copyButton('copycsv', 'Copy CSV', () => toCsv(rows))),
+          copyButton('copycsv', 'Copy CSV', () => toCsv(rows))) : null,
       ] : [];
       fill(
         h('div', { class: 'step', id: 'summary' }, state.opts.dryRun
@@ -1765,6 +1916,12 @@
         advBar.style.width = (p.total ? Math.round((p.done / p.total) * 100) : 0) + '%';
         advLabel.textContent = `Advertisers: ${did} of ${todo}${p.skipped ? ` · ${p.skipped} skipped (remembered)` : ''}`;
         paintBar(p.total ? p.done / p.total : 0);
+      },
+      advertiserRow(r) {
+        if (!rowsBody || !rowsBody.isConnected) return;
+        rowsBody.append(advRow(r));
+        rowsBox.hidden = false;
+        rowsBox.scrollTop = rowsBox.scrollHeight;
       },
       eta(ms, unknown) { left = { ms, unknown, at: Date.now() }; paintEta(); },
       progress(text) { if (subEl) subEl.textContent = text; },
