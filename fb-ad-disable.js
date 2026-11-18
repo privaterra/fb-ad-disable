@@ -244,7 +244,10 @@
 
   // List-based advertisers confirmed disabled in earlier runs: { key: { name, result, at } }.
   const memory = {
-    load: async () => (await durable.get(MEMORY_KEY)) || {},
+    load: async () => {
+      const m = await durable.get(MEMORY_KEY);
+      return m && typeof m === 'object' && !Array.isArray(m) ? m : {};
+    },
     save: (m) => durable.set(MEMORY_KEY, m),
   };
 
@@ -309,7 +312,11 @@
   //   key   - a list-based advertiser's address ("/ads/audience_based_advertising/…"), or "seen:" + its name
   //   entry - { task, name, result, at, confirmed, category, about, followers, website, advertiser_id, link, list_uses }
   // "confirmed" is what makes a later run skip the advertiser: the page itself showed it as done.
-  let book = {};
+  //
+  // While the script runs it is a Map, not a plain object: keys come from the page, a saved run or a
+  // backup file, and a Map takes any key (even "__proto__") as plain data.
+  let book = new Map();
+  const bookFrom = (entries) => new Map(Object.entries(entries));
   let bookDirty = false;
   const confirmedIn = (entries) => Object.values(entries).filter((e) => e && e.confirmed !== false).length;
   const listKeys = (entries) => Object.keys(entries).filter((k) => k.startsWith('/'));
@@ -317,7 +324,7 @@
   const save = async () => {
     state.savedAt = Date.now();
     await store.set(state);
-    if (bookDirty) { bookDirty = false; await memory.save(book); }
+    if (bookDirty) { bookDirty = false; await memory.save(Object.fromEntries(book)); }
   };
 
   // Facebook answers with these when it will not serve a page for now. One cause is rate
@@ -750,11 +757,11 @@
     const row = { ...rec, processed_at: new Date().toISOString(), dry_run: state.opts.dryRun ? 'yes' : 'no' };
     if (key && state.opts.remember && !state.opts.dryRun) {
       const text = (v, n) => clip(v == null ? '' : String(v), n);
-      book[key] = {
+      book.set(key, {
         task: row.task, name: text(row.name, 200), result: text(row.result, 80), at: Date.now(), confirmed: !!confirmed,
         category: text(row.category, 200), about: text(row.about, 300), followers: text(row.followers, 80), website: text(row.website, 300),
         advertiser_id: text(row.advertiser_id, 40), link: text(row.link, 500), list_uses: text(row.list_uses, 400),
-      };
+      });
       bookDirty = true;
       if (confirmed) row.remembered = 'yes';
     }
@@ -1171,7 +1178,7 @@
     if (o.skipKnown) {
       let skipped = 0;
       for (const x of ls.all) {
-        const was = known[x.key];
+        const was = known.get(x.key);
         if (done.has(x.key) || !was || was.confirmed === false) continue;
         done.add(x.key);
         skipped++;
@@ -1446,7 +1453,7 @@
       // The list already says which advertisers are hidden. They are only opened when their details are wanted.
       // With details wanted, a hidden advertiser is still opened once; after that its details come from the database.
       already: (el) => hit(norm(el.textContent), t('hidden'), 'includes') &&
-        (!state.opts.saveInfo || (state.opts.skipKnown && (book['seen:' + norm(firstText(el))] || {}).confirmed === true)),
+        (!state.opts.saveInfo || (state.opts.skipKnown && (book.get('seen:' + norm(firstText(el))) || {}).confirmed === true)),
       words: {
         dry: (c) => `${c.dry} advertisers would be hidden${same(c)}`,
         done: (c) => `${c.changed} advertisers hidden${same(c)}`,
@@ -1457,7 +1464,7 @@
         ui.advertisers(prog);
         if (name) {
           const key = 'seen:' + norm(name);
-          const was = book[key] || {}; // what an earlier run read, when this one did not open the advertiser
+          const was = book.get(key) || {}; // what an earlier run read, when this one did not open the advertiser
           const got = info && info.name ? info : was;
           const rec = record({ task: 'seen', name: (info && info.name) || name, category: got.category, about: got.about,
             followers: got.followers, website: got.website, error, action: outcome === 'changed' ? 'clicked “Hide ads”' : 'none',
@@ -1701,7 +1708,7 @@
     if (busy) return;
     busy = true;
     stopRequested = false;
-    book = await memory.load();
+    book = bookFrom(await memory.load());
     bookDirty = false;
     units = buildUnits(state.opts);
     ui.showRun();
@@ -1902,23 +1909,21 @@
   const past = (v) => (Number.isFinite(v) && v > 0 ? Math.min(v, Date.now()) : 0);
 
   function cleanAdvertisers(input) {
-    const out = {};
-    if (!input || typeof input !== 'object' || Array.isArray(input)) return out;
-    let n = 0;
+    const out = [];
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
     for (const [key, e] of Object.entries(input)) {
-      if (n >= 20000) break;
+      if (out.length >= 20000) break;
       // The two kinds of key this script writes. Nothing else, so no "__proto__" either.
       if (key.length > 400 || !(key.startsWith('/ads/audience_based_advertising/') || key.startsWith('seen:'))) continue;
       if (!e || typeof e !== 'object' || Array.isArray(e)) continue;
-      out[key] = {
+      out.push([key, {
         task: key.startsWith('/') ? 'list-based' : 'seen',
         name: short(e.name, 200), result: short(e.result, 80), at: past(e.at), confirmed: e.confirmed !== false,
         category: short(e.category, 200), about: short(e.about, 300), followers: short(e.followers, 80), website: short(e.website, 300),
         advertiser_id: short(e.advertiser_id, 40), link: safeUrl(e.link), list_uses: short(e.list_uses, 400),
-      };
-      n++;
+      }]);
     }
-    return out;
+    return Object.fromEntries(out); // each key becomes the object's own entry, whatever it is called
   }
 
   function cleanHistory(input) {
@@ -1958,14 +1963,14 @@
     if (options) { prefs = options; await durable.set(PREFS_KEY, options); }
 
     const incoming = cleanAdvertisers(data.advertisers);
-    const mine = await memory.load();
+    const mine = bookFrom(await memory.load());
     let added = 0;
     for (const [key, e] of Object.entries(incoming)) {
-      const have = Object.prototype.hasOwnProperty.call(mine, key) ? mine[key] : null;
+      const have = mine.get(key);
       if (!have) added++;
-      if (!have || e.at > (have.at || 0)) mine[key] = e;
+      if (!have || e.at > (have.at || 0)) mine.set(key, e);
     }
-    await memory.save(mine);
+    await memory.save(Object.fromEntries(mine));
     book = mine;
 
     const history = cleanHistory(data.history);
@@ -2193,7 +2198,7 @@
         const n = listKeys(entries).filter((k) => entries[k] && entries[k].confirmed !== false).length;
         known.replaceChildren(` ${n} remembered${MODE === 'console' ? ' on this site' : ''}.`,
           all ? h('button', { class: 'link', name: 'forget', type: 'button',
-            onclick: async (e) => { e.preventDefault(); await memory.save({}); book = {}; showKnown(); } }, 'Forget them') : '');
+            onclick: async (e) => { e.preventDefault(); await memory.save({}); book = new Map(); showKnown(); } }, 'Forget them') : '');
         dataLine.textContent = all ? `${all} advertiser${all === 1 ? '' : 's'} in the database, ${confirmedIn(entries)} of them done.`
           : 'No advertisers in the database yet.';
         firstTime.hidden = !!(all || (hist && hist.last) || imported);

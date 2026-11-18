@@ -23,6 +23,7 @@ Each release on GitHub carries the section for its version.
 
 - **A setting is never loosened.** A row that shows something stricter than the level asks for ("No one" where Moderate would set "Friends") is left as it is.
 - The project now has two branches: `main` holds the released code, `dev` the next version. Releases are published from `main` only.
+- **Security:** the advertiser database is held in a `Map` while the script runs, and a cleaned backup file is built entry by entry, so an advertiser key that comes from the page, a saved run or an imported file can never be taken for a built-in property (two CodeQL "remote property injection" findings on the new import code).
 
 ## [1.5.0] - 2026-11-16
 
