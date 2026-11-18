@@ -11,11 +11,12 @@ const { pages, redirects } = require('./mock/pages');
 
 const ROOT = path.join(__dirname, '..');
 const SCRIPT = fs.readFileSync(path.join(ROOT, 'fb-ad-disable.js'), 'utf8');
+const { version: VERSION } = require('../package.json');
 const LIB = fs.readFileSync(path.join(__dirname, 'mock', 'lib.js'), 'utf8');
 
 // Serves the mock pages on the real Facebook hostnames. `inject` adds the script
 // to every page, the way a userscript manager would.
-async function mockFacebook(context, { inject = false, offMeta = false, listMode = 'ui' } = {}) {
+async function mockFacebook(context, { inject = false, offMeta = false, listMode = 'ui', listCut = 0 } = {}) {
   const events = [];
   await context.exposeFunction('__record', (json) => { events.push(JSON.parse(json)); });
   await context.route('**/*', (route) => route.abort()); // never touch the real internet
@@ -34,7 +35,7 @@ async function mockFacebook(context, { inject = false, offMeta = false, listMode
     return route.fulfill({
       contentType: 'text/html; charset=utf-8',
       body: `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>mock</title></head><body><div id="main"></div>
-        <script>window.__flags = ${JSON.stringify({ offMeta, listMode })}</script>
+        <script>window.__flags = ${JSON.stringify({ offMeta, listMode, listCut })}</script>
         <script src="/__mock.js"></script><script>(${page ? page.toString() : '() => {}'})()</script>
         ${inject ? '<script src="/__fbad.js"></script>' : ''}</body></html>`,
     });
@@ -330,7 +331,7 @@ test('progress bars, advertiser details CSV, saved log and remembered advertiser
   // Issue 2: the log as a file.
   const logFile = await saved(page, 'savelog');
   assert.match(logFile.file, /^fb-ad-disable-log-[\d-]+\.txt$/);
-  assert.match(logFile.text, /^fb-ad-disable 1\.6\.0 log\n/);
+  assert.ok(logFile.text.startsWith(`fb-ad-disable ${VERSION} log\n`));
   assert.match(logFile.text, /Options: \{.*"saveLog":true/);
   assert.match(logFile.text, /\d\d:\d\d:\d\d   6 advertisers found, 6 to process/);
   assert.match(logFile.text, /\d\d:\d\d:\d\d Finished\.\n$/);
@@ -505,6 +506,68 @@ test('when Facebook opens no advertiser at all, the run says so and moves on', a
   await context.close();
 });
 
+// ---- what the live run of 1.6.0 showed --------------------------------------------------------
+
+test('list-based advertisers: when Facebook stops showing the rest of the list, the step says how many are left', async () => {
+  const context = await browser.newContext();
+  // After four advertisers were opened the list only shows its first three, and "See more" is dead.
+  const events = await mockFacebook(context, { inject: true, listCut: 4 });
+  await fakeUserscriptApi(context);
+  const page = await context.newPage();
+  await page.goto('https://www.facebook.com/settings/');
+  await page.evaluate(() => window.__openMenu());
+  await configureAndStart(page, { tasks: ['lists', 'ai'] });
+  const r = await report(page);
+  // 1.6.0 reported "(of 4)" as if that were all of them.
+  assert.equal(r.lists.status, 'manual');
+  assert.match(r.lists.text, /3 disabled, 1 needed no change, 0 failed \(of 4\)/);
+  assert.match(r.lists.text, /2 of the 6 advertisers were not reached: Facebook stopped showing the rest of the list\. Run this task again; the ones done are remembered/);
+  assert.match(r.lists.text, /rate limiting/);
+  assert.equal(r.ai_summaries.status, 'changed', 'the next task still runs');
+  assert.deepEqual(events.filter((e) => e.type === 'decoy' || e.type === 'navigated'), []);
+  await context.close();
+});
+
+test('hide advertisers: an advertiser\'s own page is never taken for the list, and misfiled entries are dropped', async () => {
+  const context = await browser.newContext();
+  const events = await mockFacebook(context, { inject: true });
+  const values = await fakeUserscriptApi(context);
+  // What 1.6.0 left in the database: a line of an advertiser's page filed as an advertiser, and an
+  // advertiser filed with the name of the list. The second would make this run skip Hooli unread.
+  values.set('fbAdDisableAdvertisers', JSON.stringify({ // the userscript store holds text
+    'seen:website': { task: 'seen', name: 'Acme', result: 'already hidden', at: 5, confirmed: true },
+    'seen:hooli': { task: 'seen', name: 'Advertisers you saw ads from', category: 'Advertisers you saw ads from', result: 'already hidden', at: 5, confirmed: true },
+    'seen:globex': { task: 'seen', name: 'Globex', category: 'Energy company', result: 'ads hidden', at: 5, confirmed: true },
+  }));
+  const page = await context.newPage();
+  await page.goto('https://www.facebook.com/settings/');
+  await page.evaluate(() => window.__openMenu());
+  await configureAndStart(page, { tasks: ['seen'], options: { saveInfo: true, saveLog: true } });
+  const r = await report(page);
+  assert.equal(r.seen.status, 'changed');
+  assert.match(r.seen.text, /4 advertisers hidden, 1 already hidden$/);
+  // Nothing but "Hide ads" was clicked on any advertiser's page: no "Facebook Page", no "Website",
+  // no "Unhide", and no advertiser opened behind the one that was open.
+  assert.deepEqual(events.filter((e) => e.type === 'decoy'), []);
+  assert.deepEqual(events.filter((e) => e.type === 'hide').map((e) => e.name).sort(), ['Acme', 'Globex', 'Initech', 'Umbrella']);
+
+  const log = (await saved(page, 'savelog')).text;
+  assert.match(log, /2 entries of the advertiser database were filed under the wrong name by an earlier version/);
+  // Every advertiser once, under its own name, with its own details. The name is not repeated as its category.
+  const lines = log.split('\n').filter((x) => /\[\d\/5\]/.test(x)).map((x) => x.replace(/^\S+\s+\[\d\/5\] /, ''));
+  assert.deepEqual([...lines].sort(), [
+    'Acme · Retail company · 1,234 followers · http://acme.example/ → ads hidden, remembered',
+    'Globex · Energy company · 56,789 followers · http://globex.example/ → ads hidden, remembered',
+    'Hooli · Internet company · 3,231,099 followers · http://hooli.example/ → already hidden, remembered',
+    'Initech · Software company · 321 followers · http://initech.example/ → ads hidden, remembered',
+    'Umbrella · Pharmaceutical company · 9,001 followers · http://umbrella.example/ → ads hidden, remembered',
+  ]);
+  const kept = JSON.parse(values.get('fbAdDisableAdvertisers'));
+  assert.deepEqual(Object.keys(kept).sort(), ['seen:acme', 'seen:globex', 'seen:hooli', 'seen:initech', 'seen:umbrella']);
+  assert.deepEqual([kept['seen:hooli'].name, kept['seen:hooli'].category], ['Hooli', 'Internet company']);
+  await context.close();
+});
+
 // ---- export and import (issue 9) ------------------------------------------------------------
 
 test('data is saved to a file at the end of a run and imported in another browser', async () => {
@@ -524,7 +587,7 @@ test('data is saved to a file at the end of a run and imported in another browse
   assert.match(await panel(pageA).locator('#savedata').textContent(), /^Saved as fb-ad-disable-backup-/);
 
   const data = JSON.parse(file.text);
-  assert.deepEqual([data.app, data.format, data.version], ['fb-ad-disable', 1, '1.6.0']);
+  assert.deepEqual([data.app, data.format, data.version], ['fb-ad-disable', 1, VERSION]);
   assert.deepEqual(data.options.tasks, ['lists', 'seen']);
   assert.equal(data.options.saveInfo, true);
   const keys = Object.keys(data.advertisers);
@@ -596,13 +659,14 @@ test('a file to import is treated as untrusted: only what the script knows is ke
   }
   assert.match(await p.locator('#known').textContent(), /0 remembered/);
 
+  const EVIL = 'seen:<img src=x onerror="window.__pwned=1">'; // an entry is filed under its name
   const hostile = JSON.stringify({
     app: 'fb-ad-disable', format: 1,
     options: { tasks: ['lists', 'wipe-account'], level: 'max' }, // an unknown task: these are not our options
     advertisers: {
       'javascript:alert(1)': { name: 'bad key' },
       constructor: { name: 'bad key' },
-      'seen:evil': { name: '<img src=x onerror="window.__pwned=1">', link: 'javascript:window.__pwned=1', at: 9e15, confirmed: 'yes', extra: { deep: true } },
+      [EVIL]: { name: '<img src=x onerror="window.__pwned=1">', link: 'javascript:window.__pwned=1', at: 9e15, confirmed: 'yes', extra: { deep: true } },
       '/ads/audience_based_advertising/9/': { name: 'A'.repeat(5000), about: 42, link: 'https://evil.example/' },
       'seen:notanobject': 'text',
     },
@@ -615,8 +679,8 @@ test('a file to import is treated as untrusted: only what the script knows is ke
 
   assert.deepEqual(result.got, { options: false, advertisers: 2, added: 2, history: true });
   assert.equal(result.polluted, undefined);
-  assert.deepEqual(Object.keys(result.kept.advertisers).sort(), ['/ads/audience_based_advertising/9/', 'seen:evil']);
-  const evil = result.kept.advertisers['seen:evil'];
+  assert.deepEqual(Object.keys(result.kept.advertisers).sort(), ['/ads/audience_based_advertising/9/', EVIL]);
+  const evil = result.kept.advertisers[EVIL];
   assert.deepEqual(Object.keys(evil).sort(), ['about', 'advertiser_id', 'at', 'category', 'confirmed', 'followers', 'link', 'list_uses', 'name', 'result', 'task', 'website']);
   assert.equal(evil.link, '', 'a javascript: address is dropped');
   assert.ok(evil.at <= Date.now(), 'a date in the future is pulled back');

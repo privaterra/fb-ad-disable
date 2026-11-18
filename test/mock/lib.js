@@ -205,14 +205,18 @@
   function advertiserList(view, viaUi) {
     const mode = window.__flags.listMode;
     let expanded = false, pressedAt = 0;
+    // listCut: after that many advertisers were opened, Facebook shows less of the list than it
+    // did (seen in a live run): only its first part, with a "See more" that brings nothing.
+    const opened = () => Number(sessionStorage.getItem('mock:opened') || 0);
+    const cut = () => !!window.__flags.listCut && opened() >= window.__flags.listCut;
     const list = () => view.replaceChildren(...[
       el('div', { role: 'button', 'aria-label': 'Back', onclick: () => rec('decoy', { what: 'left the advertiser list' }) }, '←'),
       el('h1', null, span('Audience-based advertising')),
       el('a', { href: LIST }, span('Audience-based advertising')),
-      el('div', { role: 'list' }, advertisers.slice(0, expanded ? 6 : 3).map((a) =>
+      el('div', { role: 'list' }, advertisers.slice(0, expanded && !cut() ? 6 : 3).map((a) =>
         el('div', { role: 'listitem' }, el('a', { role: 'link', 'data-adv': a.id,
           href: `${LIST}${1000000 + a.id}/?should_show_back_button=true` }, span(a.name))))),
-      expanded ? null : button('See more', () => { expanded = true; list(); }),
+      expanded && !cut() ? null : button('See more', () => { if (cut()) return; expanded = true; list(); }),
     ].filter(Boolean));
 
     document.addEventListener('pointerdown', (e) => { if (e.target.closest('a[data-adv]')) pressedAt = Date.now(); }, true);
@@ -226,7 +230,7 @@
       history.pushState({}, '', link.getAttribute('href'));
       const opens = mode === 'ui' ? viaUi : mode === 'press' ? Date.now() - pressedAt < 1000 : false;
       pressedAt = 0;
-      if (opens) advertiserDetail(view, a, true); else errorPage(view);
+      if (opens) { sessionStorage.setItem('mock:opened', String(opened() + 1)); advertiserDetail(view, a, true); } else errorPage(view);
     });
     // Going back one step too far, or forward again, lands on the error page, as on the real site.
     window.addEventListener('popstate', () => {
@@ -249,5 +253,8 @@
     view.replaceChildren(el('h2', null, span('Something went wrong')), el('p', null, span('Please try again later.')));
   }
 
-  window.mock = { somethingWentWrong, advertiserList, advertiserPage, deep, viewRow, deepSwitchRows, checkboxDialogRow, popupRow, el, span, rec, main, button, dialog, closeAll, radios, switchEl, row, audienceRow, menuRow, inlineSwitchRow, dialogSwitchRow, onOffRow };
+  // A layer built by the page itself, placed like any other.
+  const attach = (d) => { offscreen.before(d); return d; };
+
+  window.mock = { attach, somethingWentWrong, advertiserList, advertiserPage, deep, viewRow, deepSwitchRows, checkboxDialogRow, popupRow, el, span, rec, main, button, dialog, closeAll, radios, switchEl, row, audienceRow, menuRow, inlineSwitchRow, dialogSwitchRow, onOffRow };
 })();
