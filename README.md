@@ -72,11 +72,12 @@ Console mode is fine for a single task such as *Disable list-based advertisers*,
 | **Advertisers and ad data** | Tick the tasks to run (table below). |
 | **Privacy settings level** | Default, Moderate or Max (table below). |
 | **Dry run** | Report what would change without changing anything. |
-| **Remember processed advertisers** (on) | Keep a list of the list-based advertisers confirmed as disabled, for later runs. |
-| **Skip remembered advertisers** (on) | Only process advertisers that are new since earlier runs. The menu shows how many are remembered, with **Forget them** to clear the list. |
+| **Remember processed advertisers** (on) | Keep the advertiser database: every advertiser handled, what Facebook says about it and what happened. |
+| **Skip remembered advertisers** (on) | Leave alone the advertisers the database has as done, and only open new ones. The menu shows how many are remembered, with **Forget them** to clear the database. |
 | **Save advertiser details** (off) | Keep everything Facebook shows about each advertiser and add CSV export to the report. The advertiser table itself is always shown. |
-| **Save logs** (off) | Keep the full log and add **Copy log** and **Save log** buttons. |
+| **Keep the full log** (on) | Keep every log line of the run instead of the last 300. **Copy log** and **Save log** are always available, whatever this is set to. |
 | **Speed** | Pause between clicks. Use *Slow* if steps fail on a slow connection. |
+| **Saved data** | **Export to file** and **Import from file**: your settings, the advertiser database and the run history as one file. See below. |
 
 ### Last run and rate limiting
 
@@ -96,6 +97,7 @@ This history is kept in this browser only, next to the remembered advertisers.
 
 - The **top bar** is overall progress: the step number, the percentage done and the estimated time left.
 - A **second bar** appears while advertisers are being processed. The script first opens the whole advertiser list to count it, then fills the bar as it works through them. When the advertisers are done the bar disappears.
+- The advertiser bar comes straight back after a page load in the middle of an advertiser step, with the count so far.
 - An **advertiser table** fills in under the bars, one row per advertiser as it is handled: its name, what Facebook says about it (category and followers, or how many list uses were still allowed), and the result: ✅ disabled or ads hidden, ☑️ no change needed or already hidden, ⏭ skipped because remembered, 👁 what a dry run would do, ⚠️ failed. "remembered" marks an advertiser that was added to the remembered list. Hover over a row for the rest of its details.
 - The **log** gets one line per advertiser in the same order, for example `[12/215] Acme · Retail company · 1,234 followers · http://acme.example/ → ads hidden`.
 - **Time left** is estimated from how fast the run is actually going: the average time per step so far, and the average time per advertiser. It is rough at the start and improves as the run proceeds. Until an advertiser list has been counted, the estimate says "plus advertisers not counted yet".
@@ -119,15 +121,35 @@ When a step fails, the report keeps **What the page showed**: the text and contr
 
 <img src="docs/report.png" alt="Report with the advertiser details table" width="372">
 
-### Remembered advertisers
+### The advertiser database
 
-With **Remember processed advertisers** on, each list-based advertiser is added to a list once the page itself confirms it is disabled (an "Allow" button is shown and no "Don't allow" button is left). With **Skip remembered advertisers** on, later runs leave those advertisers alone and only open the new ones, which makes repeat runs much shorter.
+With **Remember processed advertisers** on, every advertiser the script handles goes into a database kept in this browser: its name, what Facebook says about it (category, description, followers, website, list uses), what happened, and when.
 
-- The list is kept in this browser only: in the extension's or userscript manager's storage, or in the site's local storage in console mode. It is never sent anywhere.
-- An advertiser the script could not confirm (a failure, or no list-use buttons found) is not remembered, so it is checked again next time.
-- A dry run does not add to the list.
-- Untick **Skip remembered advertisers** to re-check everyone, or use **Forget them** in the menu to clear the list.
-- Only the list-based advertiser task uses this. Advertisers whose ads are already hidden are skipped by Facebook's own page (their button no longer says "Hide ads").
+An advertiser counts as **done** once the page itself confirms it: for a list-based advertiser, an "Allow" button is shown and no "Don't allow" button is left; for an advertiser you saw ads from, its ads are hidden. With **Skip remembered advertisers** on, later runs use that:
+
+- a list-based advertiser that is done is not opened again, which makes repeat runs much shorter;
+- an advertiser whose ads are hidden is not opened again just to read its details: they come from the database.
+
+Fewer pages opened also means less chance of running into Facebook's rate limit.
+
+- An advertiser the script could not confirm (a failure, or no list-use buttons found) is in the database but not marked done, so it is checked again next time.
+- A dry run does not add to the database.
+- Untick **Skip remembered advertisers** to re-check everyone, or use **Forget them** in the menu to clear the database.
+- The database never leaves this browser unless you export it. In console mode it is kept in the site's local storage, separately for `www.facebook.com` and `accountscenter.facebook.com`.
+
+### Saving your data to a file, and importing it
+
+Everything the script keeps lives in the browser: in the extension's storage, the userscript manager's, or the site's. It is lost when that storage is: a new browser or profile, a reinstall, or loading the extension from a different folder (Chrome treats that as a new extension). A file gets around that.
+
+- **When a run finishes**, the report asks: *Save your data to a file?* **Save to file** downloads `fb-ad-disable-backup-<date>.json`. It is not asked after a dry run, which changed nothing.
+- **At the start**, when nothing is saved in this browser, the top of the menu says so and offers **Import from file**.
+- **At any time**, the **Saved data** section of the menu has **Export to file** and **Import from file**.
+
+The file holds three things: your settings (the menu's choices), the advertiser database, and the run history (when each section last ran and how it went). It is plain JSON that you can read. It holds no passwords and nothing about your Facebook account beyond the advertisers Facebook listed for you.
+
+Importing **merges**: for an advertiser or a section that both the file and the browser have, the more recent entry stays, and importing the same file twice adds nothing. The settings in the file replace the menu's. The menu then says what was imported, for example "Imported my-backup.json: settings, 215 advertisers (198 new here), run history."
+
+A file to import is treated as untrusted: only the fields the script knows are read, text is capped in length, and anything else is dropped.
 
 ### Advertiser details (CSV)
 
@@ -156,14 +178,14 @@ The details are whatever Facebook's page shows for that advertiser; the script c
 
 ### Saving the log
 
-With **Save logs** on, **Copy log** and **Save log** appear during the run and in the report. The saved text file contains the options used, the report and every log line with its time. Without the option, only the last 300 log lines are kept, and only on screen.
+**Copy log** and **Save log** are always there, during the run and in the report. The saved text file contains the options used, the report and the log lines with their times. With **Keep the full log** on (the default) that is every line of the run; with it off, the last 300.
 
 ## What each task does
 
 | Task | Where | What happens |
 | --- | --- | --- |
 | **Disable list-based advertisers** | Accounts Center → Ad preferences → Manage info → Audience-based advertising | For every advertiser: open it → *They uploaded or used a list to reach you* → **Don't allow**, for both showing you ads and excluding you from ads. This is the original script this project grew from. See the note below. |
-| **Hide advertisers you have seen** | Ad preferences → Advertisers you saw ads from | Opens each advertiser in the list and clicks **Hide ads**. Advertisers the list marks "You hid their ads" are counted as already hidden and left alone. The list loads as it is scrolled, so the script first scrolls it to the end to count it, and scrolls again whenever Facebook redraws it after a hide. If entries are still out of reach at the end the report says how many. |
+| **Hide advertisers you have seen** | Ad preferences → Advertisers you saw ads from | Opens each advertiser in the list and clicks **Hide ads**. Advertisers the list marks "You hid their ads" are counted as already hidden and left alone. The list loads as it is scrolled, so the script first scrolls it to the end to count it, and scrolls again whenever Facebook redraws it after a hide. An advertiser's own panel contains list-like lines too (its category, its description); the script only picks an entry while the list itself is on screen, so each advertiser is handled once. If entries are still out of reach at the end the report says how many. |
 | **Restrict ad data settings** | Ad preferences → Manage info | *Activity from other businesses* (formerly "Activity information from ad partners") → not using this information · *Categories used to reach you* → employer, job title, education and relationship status set to not used, other categories removed · *Ads in other apps* (under "Ads shown outside of Meta") → not showing · *Ads about Meta* → not using your activity · *Social interactions* → Only me. A row that already says so ("Not using this information") is left untouched. |
 | **Clear off-Meta activity history** | Accounts Center → Your information and permissions → Your activity off Meta technologies | **Clear previous activity**. See the note below. |
 | **Disconnect future off-Meta activity** (off by default; Max ticks it) | same page | *Manage future activity* → **Disconnect future activity**. Side effect: "Log in with Facebook" on other sites and apps stops working. See the note below. |
@@ -226,6 +248,8 @@ Meta gives no single switch for AI, and Meta AI itself (in search and Messenger)
 
 Where Facebook offers nothing stricter than Friends (followers, public comments), Max uses Friends.
 
+A setting is never loosened. If a row already shows something stricter than the level asks for, for example "No one" where Moderate would set "Friends", it is left as it is and the report says so. When a row shows its current value and that is already the wanted one, the row is not opened at all.
+
 ## What this cannot do
 
 - **It cannot delete what data brokers hold.** It stops brokers and advertisers from using their lists and your off-Meta activity to target you on Meta, which is the part Facebook lets you control. To have a broker delete your record you must ask the broker (or use an opt-out service or your regional privacy rights, for example GDPR or CCPA requests).
@@ -245,7 +269,7 @@ A safety rule that is tested: an option such as "Friends" or "Only me" is only e
 
 ## Troubleshooting
 
-- **Reporting a problem.** Use **Copy report** and paste it; for more detail run again with **Save logs** ticked and attach the saved log file. Both contain "what the page showed" for each failed step.
+- **Reporting a problem.** Use **Copy report** and paste it; for more detail use **Save log** and attach the file. Both contain "what the page showed" for each failed step.
 - **The page reloaded during a run.** In the extension and userscript the same tab carries on by itself from the step it was on (a step that reloads three times is skipped and reported). In console mode, run the script again.
 - **"Had no list controls" or "failed" advertisers.** An advertiser page without "Don't allow" / "Allow" buttons, or one where Facebook shows "This page isn't available right now", is counted separately and never reported as done. The report keeps what the first such page showed.
 - **A row has moved.** Facebook moves settings between pages. For rows known to move, the script tries the next settings page by itself (the log says "not on this page, trying the next one").
@@ -281,7 +305,23 @@ sha256sum -c SHA256SUMS.txt
 
 A release is built from a tagged commit by the Release workflow, after the tests and `npm audit` pass. Nothing is added to the files beyond what is in this repository.
 
-To publish one: set the version in `package.json`, `package-lock.json`, `manifest.json` and the two places in `fb-ad-disable.js`, add its section to `CHANGELOG.md`, push, then run **Release** from the Actions tab. The workflow checks that the version matches everywhere, refuses a version that is already released, and creates the tag and the release.
+### Branches
+
+| Branch | Holds |
+| --- | --- |
+| `main` | The released code. What you get when you clone the repository, and the only branch releases are published from. |
+| `dev` | The next version, while it is being put together. It can be ahead of the latest release and is not guaranteed to work. |
+
+Changes go to `dev`, directly or through a pull request. CI, `npm audit` and CodeQL run on every push to either branch, and Dependabot proposes its updates against `dev`. To try the next version before it is released, clone `dev` and load it unpacked.
+
+### Publishing a release
+
+1. On `dev`, set the new version in `package.json`, `package-lock.json`, `manifest.json` and the two places in `fb-ad-disable.js`.
+2. In `CHANGELOG.md`, turn the **Unreleased** section into the section for that version.
+3. Open a pull request from `dev` into `main` and merge it once CI passes.
+4. Run **Release** from the Actions tab, on `main`.
+
+The workflow checks that the version matches everywhere, refuses a version that is already released, refuses to publish from any branch but `main`, and creates the tag and the release.
 
 ## Development
 

@@ -3,9 +3,10 @@ name: Release
 # Publishes the version in package.json as a GitHub release, with the extension zip, the
 # userscript and their checksums attached.
 #
-# To release: set the version (package.json, package-lock.json, manifest.json and the two
-# places in fb-ad-disable.js), add its section to CHANGELOG.md, push, then run this workflow
-# from the Actions tab. It refuses to run twice for the same version.
+# To release: on dev, set the version (package.json, package-lock.json, manifest.json and the
+# two places in fb-ad-disable.js) and add its section to CHANGELOG.md. Merge dev into main, then
+# run this workflow on main from the Actions tab. It only publishes from main, and it refuses
+# to run twice for the same version.
 on:
   workflow_dispatch:
 
@@ -20,6 +21,11 @@ jobs:
     permissions:
       contents: write # to create the tag and the release
     steps:
+      - name: Only from main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Releases are published from main. Merge dev into main, then run this workflow on main."
+          exit 1
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:

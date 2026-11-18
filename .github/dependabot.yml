@@ -2,15 +2,19 @@
 # Dependabot opens a pull request for each update, and the CI workflow tests it.
 # Security advisories: turn on "Dependabot alerts" and "Dependabot security updates" under
 # Settings → Advanced Security, and a fix is proposed as soon as an advisory is published.
+# Updates are proposed against dev, where the next version is put together, and reach main with
+# the next release. Security updates are always proposed against main, the default branch.
 version: 2
 updates:
   - package-ecosystem: npm
     directory: /
+    target-branch: dev
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
   - package-ecosystem: github-actions
     directory: /
+    target-branch: dev
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

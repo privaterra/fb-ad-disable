@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FB Ad Disable & Privacy Hardener
 // @namespace    https://github.com/privaterra/fb-ad-disable
-// @version      1.5.0
+// @version      1.6.0
 // @description  Opt out of advertiser lists, restrict ad data use and tighten Facebook privacy settings from one menu.
 // @license      MIT
 // @homepageURL  https://github.com/privaterra/fb-ad-disable
@@ -32,11 +32,13 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.5.0';
+  const VERSION = '1.6.0';
   const TAG = '[fb-ad-disable]';
   const KEY = 'fbAdDisableState';
   const MEMORY_KEY = 'fbAdDisableAdvertisers';
   const HISTORY_KEY = 'fbAdDisableHistory';
+  const PREFS_KEY = 'fbAdDisablePrefs';
+  const BACKUP_FORMAT = 1;
 
   if (window.top !== window) return;
   if (window.__fbAdDisable) { window.__fbAdDisable.open(); return; }
@@ -242,7 +244,10 @@
 
   // List-based advertisers confirmed disabled in earlier runs: { key: { name, result, at } }.
   const memory = {
-    load: async () => (await durable.get(MEMORY_KEY)) || {},
+    load: async () => {
+      const m = await durable.get(MEMORY_KEY);
+      return m && typeof m === 'object' && !Array.isArray(m) ? m : {};
+    },
     save: (m) => durable.set(MEMORY_KEY, m),
   };
 
@@ -257,17 +262,22 @@
 
   // A saved run is only accepted when it has the shape this script writes. In console mode the
   // saved run travels in window.name, which any site the tab visited before could have set.
-  function sane(st) {
-    if (!st || typeof st !== 'object' || Array.isArray(st)) return null;
-    const o = st.opts;
+  // The options of a run, rebuilt from whatever was stored or imported. null when they are not ours.
+  function cleanOptions(o) {
     if (!o || typeof o !== 'object' || !Array.isArray(o.tasks)) return null;
     const taskIds = TASKS.map((x) => x.id);
     if (!o.tasks.every((x) => taskIds.includes(x)) || !LEVELS.some((x) => x.id === o.level)) return null;
-    st.opts = {
+    return {
       tasks: [...new Set(o.tasks)], level: o.level, dryRun: !!o.dryRun,
       delay: Math.min(10000, Math.max(20, Number(o.delay) || 1500)),
       remember: !!o.remember, skipKnown: !!o.skipKnown, saveInfo: !!o.saveInfo, saveLog: !!o.saveLog,
     };
+  }
+
+  function sane(st) {
+    if (!st || typeof st !== 'object' || Array.isArray(st)) return null;
+    st.opts = cleanOptions(st.opts);
+    if (!st.opts) return null;
     st.idx = Math.max(0, Math.floor(Number(st.idx)) || 0);
     st.running = st.running === true;
     st.results = (Array.isArray(st.results) ? st.results : []).slice(0, 500)
@@ -297,7 +307,25 @@
   let stopRequested = false;
   let busy = false;
 
-  const save = async () => { state.savedAt = Date.now(); await store.set(state); };
+  // The advertiser database: every advertiser handled, with what Facebook says about it and what
+  // happened. Kept in this browser only (and in a backup file when you save one).
+  //   key   - a list-based advertiser's address ("/ads/audience_based_advertising/…"), or "seen:" + its name
+  //   entry - { task, name, result, at, confirmed, category, about, followers, website, advertiser_id, link, list_uses }
+  // "confirmed" is what makes a later run skip the advertiser: the page itself showed it as done.
+  //
+  // While the script runs it is a Map, not a plain object: keys come from the page, a saved run or a
+  // backup file, and a Map takes any key (even "__proto__") as plain data.
+  let book = new Map();
+  const bookFrom = (entries) => new Map(Object.entries(entries));
+  let bookDirty = false;
+  const confirmedIn = (entries) => Object.values(entries).filter((e) => e && e.confirmed !== false).length;
+  const listKeys = (entries) => Object.keys(entries).filter((k) => k.startsWith('/'));
+
+  const save = async () => {
+    state.savedAt = Date.now();
+    await store.set(state);
+    if (bookDirty) { bookDirty = false; await memory.save(Object.fromEntries(book)); }
+  };
 
   // Facebook answers with these when it will not serve a page for now. One cause is rate
   // limiting: too many of its pages opened in a short time.
@@ -722,8 +750,21 @@
 
   // One row of the advertiser table: shown as the run goes, and in the report. The long texts
   // are only kept when "Save advertiser details" is on.
-  function record(rec) {
+  //
+  // With a key, the advertiser also goes into the database (unless this is a dry run, which leaves
+  // no trace, or remembering is off). `confirmed` says whether the page showed it as done.
+  function record(rec, key, confirmed) {
     const row = { ...rec, processed_at: new Date().toISOString(), dry_run: state.opts.dryRun ? 'yes' : 'no' };
+    if (key && state.opts.remember && !state.opts.dryRun) {
+      const text = (v, n) => clip(v == null ? '' : String(v), n);
+      book.set(key, {
+        task: row.task, name: text(row.name, 200), result: text(row.result, 80), at: Date.now(), confirmed: !!confirmed,
+        category: text(row.category, 200), about: text(row.about, 300), followers: text(row.followers, 80), website: text(row.website, 300),
+        advertiser_id: text(row.advertiser_id, 40), link: text(row.link, 500), list_uses: text(row.list_uses, 400),
+      });
+      bookDirty = true;
+      if (confirmed) row.remembered = 'yes';
+    }
     if (!state.opts.saveInfo) { delete row.detail_text; delete row.list_text; }
     state.records.push(row);
     ui.advertiserRow(row);
@@ -806,6 +847,10 @@
   const describe = (v) => (v === 'alloff' ? 'every switch off' : typeof v === 'boolean' ? (v ? 'On' : 'Off')
     : '“' + v[0].charAt(0).toUpperCase() + v[0].slice(1) + '”');
 
+  // Audiences from widest to narrowest. A setting is never moved to a wider one.
+  const AUDIENCES = [['public', 'everyone', 'anyone', 'possible connections'], ['friends of friends'], ['friends'], ['only me', 'no one']];
+  const strictness = (text) => AUDIENCES.findIndex((names) => names.includes(norm(text)));
+
   async function applySetting(s, value) {
     if (s.tab) {
       const tab = findText(s.tab)[0];
@@ -835,6 +880,25 @@
       return r;
     }
 
+    // A row usually shows its current value ("People with your email address · No one"). When that
+    // is already the wanted one there is nothing to open.
+    if (Array.isArray(value)) {
+      const holder = row.closest('[role="button"],[role="link"],[role="listitem"]') || row.parentElement;
+      if (holder && holder.textContent.length < 300) {
+        const label = ownText(row);
+        const walker = document.createTreeWalker(holder, NodeFilter.SHOW_TEXT);
+        const wanted = strictness(value[0]);
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+          const piece = norm(n.nodeValue);
+          if (!piece || piece === label) continue;
+          if (hit(piece, value, s.mode || 'exact')) return { status: 'already', detail: clip(n.nodeValue, 80) };
+          // Never loosen: "No one" stays when the level only asks for "Friends".
+          if (wanted >= 0 && strictness(piece) > wanted) {
+            return { status: 'already', detail: `${clip(n.nodeValue, 80)} (stricter than ${describe(value)}, left as it is)` };
+          }
+        }
+      }
+    }
     let opened = await openRow(row);
     if (!opened && !(value !== 'alloff' && findOption(value, s.mode || 'exact').length)) {
       const btn = row.isConnected && rowButton(row); // e.g. the "View" link next to the row
@@ -925,7 +989,7 @@
     const tally = state.listsTally || (state.listsTally = { changed: 0, none: 0, failed: 0, dry: 0, skipped: 0, bare: 0 });
     const prog = state.adv.lists || (state.adv.lists = { done: 0, total: 0, skipped: 0 });
     const ls = state.lists || (state.lists = { way: 'click', ok: 0, bad: 0, at: null, all: [], since: 0 });
-    const known = o.remember || o.skipKnown ? await memory.load() : {};
+    const known = book;
     const broken = () => findText(t('unavailable'), { mode: 'includes' }).length > 0;
     const NOT_SHOWN = 'Facebook showed “This page isn’t available right now”';
 
@@ -1001,13 +1065,8 @@
       }
       done.add(key);
       state.listsDone = [...done];
-      if (o.remember && out.confirmed && !o.dryRun) { // a dry run leaves no trace
-        known[key] = { name, result: rec.result, at: Date.now() };
-        await memory.save(known);
-        rec.remembered = 'yes';
-      }
-      record(rec);
-      log(advLine(rec, done.size, Math.max(prog.total, done.size)));
+      const row = record(rec, key, !out.error && out.confirmed);
+      log(advLine(row, done.size, Math.max(prog.total, done.size)));
       tick(UNIT, started);
       await save();
       sync();
@@ -1119,10 +1178,12 @@
     if (o.skipKnown) {
       let skipped = 0;
       for (const x of ls.all) {
-        if (done.has(x.key) || !known[x.key]) continue;
+        const was = known.get(x.key);
+        if (done.has(x.key) || !was || was.confirmed === false) continue;
         done.add(x.key);
         skipped++;
-        record({ task: 'list-based', name: known[x.key].name || x.name, advertiser_id: advertiserId(x.href), link: x.href,
+        record({ task: 'list-based', name: was.name || x.name, advertiser_id: advertiserId(x.href), link: x.href,
+          about: was.about, followers: was.followers, website: was.website, list_uses: was.list_uses,
           result: 'skipped (remembered from an earlier run)', action: 'none', remembered: 'yes' });
       }
       tally.skipped += skipped;
@@ -1205,55 +1266,88 @@
     // An entry is known by its name: its status line ("You hid their ads") changes as the run goes.
     const keyOf = (el) => norm(firstText(el));
     const done = new Set(state[doneKey] || []);
+    const names = new Set(state[doneKey + 'Names'] || []); // every entry the list has shown
     const count = state[doneKey + 'Count'] || (state[doneKey + 'Count'] = { changed: 0, dry: 0, same: 0, failed: 0 });
-    let fails = 0, seen = '';
+    let fails = 0, seen = '', note = '';
+
+    // Is the list what is on screen? The panel of a single entry also contains list-like lines
+    // (an advertiser's category, its description). Taking those for entries books every advertiser
+    // twice, so an entry is only ever picked while most of what is listed is known to be the list.
+    const listShowing = () => {
+      const keys = items().map(keyOf);
+      if (!keys.length) return false;
+      if (!names.size) return true; // the first look, right after the list was opened
+      const known = keys.filter((k) => names.has(k)).length;
+      return known >= Math.min(3, names.size, keys.length) && known * 2 >= keys.length;
+    };
+    const learn = () => {
+      if (listShowing()) for (const el of items()) names.add(keyOf(el));
+      state[doneKey + 'Names'] = [...names];
+      return names.size;
+    };
+    // Close whatever is in front of the list: its own Back button, one press at a time, giving a
+    // panel that closes slowly the time to go before pressing anything else.
+    const backToList = async () => {
+      for (let i = 0; i < 4 && !listShowing(); i++) {
+        if (await waitFor(listShowing, i ? 3000 : 600).catch(() => false)) break;
+        const layer = topLayer();
+        const btn = (layer && findLabel(t('back'), layer).pop()) || findLabel(t('back')).pop();
+        if (!btn) break;
+        click(btn);
+        await settle();
+      }
+      return (await waitFor(listShowing, 3000).catch(() => false)) === true;
+    };
+    // The list cannot be brought back, or has stopped showing entries it showed before: load the
+    // page afresh, as long as each fresh load gets further. After that, say what was left.
+    const startOver = async (why, left) => {
+      const stall = state[doneKey + 'Stall'] || (state[doneKey + 'Stall'] = { at: -1, n: 0 });
+      if (done.size > stall.at) { stall.at = done.size; stall.n = 0; }
+      if (++stall.n <= 2) { await save(); throw new Renav(why, done.size); }
+      note = left;
+    };
 
     await waitFor(() => items().length, 8000, 'a list on this page');
-    const total = () => new Set([...done, ...items().map(keyOf)]).size;
-    const most = () => (state[doneKey + 'Total'] = Math.max(state[doneKey + 'Total'] || 0, total()));
     // More entries: a "See more" in the pop-up, or the end of a list that loads as it scrolls.
     // Keeps going while the list grows, until `until()` is true or nothing more comes.
     const load = async (until) => {
       if (!topLayer()) return false;
       for (let i = 0, stale = 0; i < 120 && stale < 2; i++) {
         check();
-        if (until()) return true;
+        if (until() || !listShowing()) break;
         const before = items().length;
         const btns = searchText(scope(), [...t('seeMore'), ...t('seeAll')], 'exact');
         if (btns.length) { btns.forEach(click); await settle(); }
         const list = items();
         if (list.length) { try { list[list.length - 1].scrollIntoView({ block: 'end' }); } catch (e) { /* ignore */ } await settle(); }
         stale = items().length > before ? 0 : stale + 1;
-        ui.progress(`${items().length} entries loaded…`);
+        learn();
+        ui.progress(`${names.size} entries found…`);
       }
       return until();
     };
     const more = () => load(() => items().some((x) => !done.has(keyOf(x))));
-    let note = '';
     // Count first: load the whole list, so the bar has its total and nothing is left unseen at the end.
+    learn();
     await load(() => false);
     ui.progress('');
-    each(null, null, done.size, most());
+    each(null, null, done.size, learn());
     while (fails < 3 && done.size < 1000) {
       check();
-      most();
+      if (!listShowing() && !(await backToList())) {
+        await startOver('the list is no longer on screen', ', the list could not be brought back on screen: run this task again');
+        break;
+      }
+      learn();
       const el = items().find((x) => !done.has(keyOf(x)));
       if (!el) {
         if (await more()) continue;
-        // Facebook sometimes redraws the list with fewer entries after a change. Load it afresh,
-        // as long as each fresh load gets further; after that, say how many were left.
-        const missing = (state[doneKey + 'Total'] || 0) - done.size;
-        if (missing > 0) {
-          const stall = state[doneKey + 'Stall'] || (state[doneKey + 'Stall'] = { at: -1, n: 0 });
-          if (done.size > stall.at) { stall.at = done.size; stall.n = 0; }
-          if (++stall.n <= 2) { await save(); throw new Renav('the list stopped showing its remaining entries', done.size); }
-          note = `, ${missing} more were listed at first but are no longer shown: run this task again`;
-        }
+        const missing = names.size - done.size;
+        if (missing > 0) await startOver('the list stopped showing its remaining entries', `, ${missing} more were listed at first but are no longer shown: run this task again`);
         break;
       }
       const key = keyOf(el);
       const name = firstText(el);
-      const size = most();
       let outcome, info = {}, error = '';
       if (already && already(el)) {
         count.same++;
@@ -1277,11 +1371,11 @@
             seen = seen || snapshot();
           }
         }
-        if (!items().some((x) => keyOf(x) === key)) await goBack(1);
+        await backToList();
       }
-      done.add(key);
+      done.add(key); // booked once, whatever happens next
       state[doneKey] = [...done];
-      each(name, outcome, done.size, Math.max(size, done.size), info, error);
+      each(name, outcome, done.size, Math.max(names.size, done.size), info, error);
       await save();
     }
     const said = words || { dry: (c) => `${c.dry} would be changed`, done: (c) => `${c.changed} changed of ${done.size}` };
@@ -1357,7 +1451,9 @@
     }, {
       ignore: ['all advertisers', 'all accounts'], // the filters above the list
       // The list already says which advertisers are hidden. They are only opened when their details are wanted.
-      already: state.opts.saveInfo ? null : (el) => hit(norm(el.textContent), t('hidden'), 'includes'),
+      // With details wanted, a hidden advertiser is still opened once; after that its details come from the database.
+      already: (el) => hit(norm(el.textContent), t('hidden'), 'includes') &&
+        (!state.opts.saveInfo || (state.opts.skipKnown && (book.get('seen:' + norm(firstText(el))) || {}).confirmed === true)),
       words: {
         dry: (c) => `${c.dry} advertisers would be hidden${same(c)}`,
         done: (c) => `${c.changed} advertisers hidden${same(c)}`,
@@ -1367,9 +1463,13 @@
         prog.total = Math.max(prog.total, total);
         ui.advertisers(prog);
         if (name) {
-          const rec = record({ task: 'seen', name: (info && info.name) || name, category: info.category, about: info.about,
-            followers: info.followers, website: info.website, error, action: outcome === 'changed' ? 'clicked “Hide ads”' : 'none',
-            result: { changed: 'ads hidden', dry: 'would be hidden (dry run)', same: 'already hidden', failed: 'failed' }[outcome] });
+          const key = 'seen:' + norm(name);
+          const was = book.get(key) || {}; // what an earlier run read, when this one did not open the advertiser
+          const got = info && info.name ? info : was;
+          const rec = record({ task: 'seen', name: (info && info.name) || name, category: got.category, about: got.about,
+            followers: got.followers, website: got.website, error, action: outcome === 'changed' ? 'clicked “Hide ads”' : 'none',
+            result: { changed: 'ads hidden', dry: 'would be hidden (dry run)', same: 'already hidden', failed: 'failed' }[outcome] },
+          key, outcome === 'changed' || outcome === 'same');
           log(advLine(rec, did, prog.total));
           tick('seen', last);
         }
@@ -1608,6 +1708,8 @@
     if (busy) return;
     busy = true;
     stopRequested = false;
+    book = bookFrom(await memory.load());
+    bookDirty = false;
     units = buildUnits(state.opts);
     ui.showRun();
     try {
@@ -1718,6 +1820,8 @@
     state = upgrade({ v: 2, running: true, opts, idx: 0, navFor: null, navAt: 0, alias: {}, renav: {}, results: [], log: [],
       runId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}` });
     markTab();
+    prefs = opts;
+    await durable.set(PREFS_KEY, opts);
     log(`fb-ad-disable ${VERSION} · ${MODE} mode${opts.dryRun ? ' · DRY RUN (nothing will be changed)' : ''}`);
     await save();
     runQueue();
@@ -1788,6 +1892,98 @@
   const fileStamp = () => new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
 
   // ---------------------------------------------------------------------------
+  // Backup file: everything this browser keeps, to carry to another browser or
+  // to bring back after the saved data is lost (a reinstall, a new profile).
+  //
+  //   { app: "fb-ad-disable", format: 1, version, exportedAt,
+  //     options:     the settings of the menu,
+  //     advertisers: the advertiser database,
+  //     history:     when each section last ran and how it went }
+  //
+  // A file to import is data from outside: every part is rebuilt from the fields
+  // this script knows, with lengths capped, and anything else is dropped.
+  // ---------------------------------------------------------------------------
+  let prefs = null; // the options last used or imported: what the menu starts from
+
+  const short = (v, n) => clip(typeof v === 'string' ? v : '', n);
+  const past = (v) => (Number.isFinite(v) && v > 0 ? Math.min(v, Date.now()) : 0);
+
+  function cleanAdvertisers(input) {
+    const out = [];
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+    for (const [key, e] of Object.entries(input)) {
+      if (out.length >= 20000) break;
+      // The two kinds of key this script writes. Nothing else, so no "__proto__" either.
+      if (key.length > 400 || !(key.startsWith('/ads/audience_based_advertising/') || key.startsWith('seen:'))) continue;
+      if (!e || typeof e !== 'object' || Array.isArray(e)) continue;
+      out.push([key, {
+        task: key.startsWith('/') ? 'list-based' : 'seen',
+        name: short(e.name, 200), result: short(e.result, 80), at: past(e.at), confirmed: e.confirmed !== false,
+        category: short(e.category, 200), about: short(e.about, 300), followers: short(e.followers, 80), website: short(e.website, 300),
+        advertiser_id: short(e.advertiser_id, 40), link: safeUrl(e.link), list_uses: short(e.list_uses, 400),
+      }]);
+    }
+    return Object.fromEntries(out); // each key becomes the object's own entry, whatever it is called
+  }
+
+  function cleanHistory(input) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+    const given = input.tasks && typeof input.tasks === 'object' ? input.tasks : {};
+    const tasks = {};
+    for (const id of [...TASKS.map((x) => x.id), 'privacy']) {
+      const e = Object.prototype.hasOwnProperty.call(given, id) ? given[id] : null;
+      if (!e || typeof e !== 'object' || !past(e.at)) continue;
+      tasks[id] = { at: past(e.at), dryRun: !!e.dryRun, level: LEVELS.some((x) => x.id === e.level) ? e.level : '',
+        limited: !!e.limited, note: short(e.note, 300) };
+    }
+    const l = input.last;
+    const last = l && typeof l === 'object' && past(l.at)
+      ? { at: past(l.at), dryRun: !!l.dryRun, finished: !!l.finished, version: short(l.version, 20) } : null;
+    return last || Object.keys(tasks).length ? { last, tasks } : null;
+  }
+
+  async function exportData() {
+    return JSON.stringify({
+      app: 'fb-ad-disable', format: BACKUP_FORMAT, version: VERSION, exportedAt: new Date().toISOString(),
+      options: prefs || (state && state.opts) || null,
+      advertisers: cleanAdvertisers(await memory.load()),
+      history: cleanHistory(await durable.get(HISTORY_KEY)),
+    }, null, 2) + '\n';
+  }
+
+  // Merges a backup file into what this browser keeps. For an advertiser or a section that both
+  // have, the more recent entry stays. The settings in the file replace the menu's.
+  async function importData(text) {
+    if (typeof text !== 'string' || text.length > 20e6) throw new Error('the file is too large to be a backup');
+    const data = parse(text);
+    if (!data || typeof data !== 'object' || data.app !== 'fb-ad-disable') throw new Error('it is not an fb-ad-disable backup file');
+    if (!(data.format >= 1 && data.format <= BACKUP_FORMAT)) throw new Error('it was made by a newer version of fb-ad-disable: update first');
+
+    const options = cleanOptions(data.options);
+    if (options) { prefs = options; await durable.set(PREFS_KEY, options); }
+
+    const incoming = cleanAdvertisers(data.advertisers);
+    const mine = bookFrom(await memory.load());
+    let added = 0;
+    for (const [key, e] of Object.entries(incoming)) {
+      const have = mine.get(key);
+      if (!have) added++;
+      if (!have || e.at > (have.at || 0)) mine.set(key, e);
+    }
+    await memory.save(Object.fromEntries(mine));
+    book = mine;
+
+    const history = cleanHistory(data.history);
+    if (history) {
+      const cur = cleanHistory(await durable.get(HISTORY_KEY)) || { last: null, tasks: {} };
+      for (const [id, e] of Object.entries(history.tasks)) if (!cur.tasks[id] || e.at > cur.tasks[id].at) cur.tasks[id] = e;
+      if (history.last && (!cur.last || history.last.at > cur.last.at)) cur.last = history.last;
+      await durable.set(HISTORY_KEY, cur);
+    }
+    return { options: !!options, advertisers: Object.keys(incoming).length, added, history: !!history };
+  }
+
+  // ---------------------------------------------------------------------------
   // Panel UI (shadow DOM, built without innerHTML)
   // ---------------------------------------------------------------------------
   function h(tag, props, ...kids) {
@@ -1830,6 +2026,8 @@
     button.b.primary { background: #14324d; border-color: #14324d; color: #fff; }
     button.b.danger { background: #b3261e; border-color: #b3261e; color: #fff; }
     .note { margin-top: 10px; padding: 8px 10px; border-radius: 6px; background: #fff4d6; color: #5c4300; font-size: 12px; }
+    .note.ok { background: #dff3e6; color: #17472b; }
+    .note .btns { margin-top: 8px; }
     .bar { height: 6px; border-radius: 3px; background: #e3e6ea; overflow: hidden; margin: 8px 0; }
     .bar i { display: block; height: 100%; width: 0; background: #2f7d5b; transition: width .3s; }
     .bar.adv i { background: #2f6ea3; }
@@ -1867,11 +2065,13 @@
       .bar { background: #3a4048; }
       li { border-color: #3a4048; }
       .note { background: #4a3a10; color: #f3dfa6; }
+      .note.ok { background: #173d27; color: #bfe8cd; }
       a { color: #7db8f0; }
     }`;
 
   const ui = (() => {
     let host, root, body, logEl, stepEl, subEl, barEl, pctEl, etaEl, advBox, advLabel, advBar, rowsBox, rowsBody, ticker;
+    let imported = null; // what the last import did, shown at the top of the menu
     let cur = { i: 0, n: 1 };
     let left = null; // { ms, unknown, at }
 
@@ -1922,14 +2122,15 @@
       return b;
     }
 
-    const logButtons = () => (state.opts.saveLog ? [
+    // Always offered. The "Save logs" option decides how much of the log is kept, not whether it can be saved.
+    const logButtons = () => [
       copyButton('copylog', 'Copy log', logText),
       h('button', { class: 'b', name: 'savelog', onclick: () => download(`fb-ad-disable-log-${fileStamp()}.txt`, logText(), 'text/plain') }, 'Save log'),
-    ] : []);
+    ];
 
     function showMenu() {
       mount();
-      const saved = state && state.opts;
+      const saved = prefs || (state && state.opts);
       const pref = (key, fallback) => (saved && saved[key] !== undefined ? saved[key] : fallback);
       const option = (name, on, label, ...hint) => h('label', { class: 'opt' },
         h('input', { type: 'checkbox', name, checked: !!on }), h('span', null, label), h('em', null, hint));
@@ -1972,11 +2173,35 @@
 
       // How many advertisers earlier runs remembered, with a way to forget them.
       const known = h('span', { id: 'known' });
+      // Saved data: what this browser keeps, a file to carry it elsewhere, and a prompt to import
+      // one when nothing is saved here (a new browser, or the extension loaded from a new folder).
+      const dataLine = h('div', { class: 'sub', id: 'saved' });
+      const picker = h('input', { type: 'file', name: 'importfile', accept: '.json,application/json', hidden: true, onchange: async () => {
+        const file = picker.files && picker.files[0];
+        if (!file) return;
+        try {
+          const got = await importData(await file.text());
+          imported = { ok: true, text: `Imported ${file.name}: ${[got.options ? 'settings' : '', `${got.advertisers} advertiser${got.advertisers === 1 ? '' : 's'} (${got.added} new here)`, got.history ? 'run history' : ''].filter(Boolean).join(', ')}.` };
+        } catch (e) {
+          imported = { ok: false, text: `Could not import ${file.name}: ${e.message}.` };
+        }
+        showMenu(); // again, now from the imported settings
+      } });
+      const importButton = () => h('button', { class: 'b', name: 'import', type: 'button', onclick: () => picker.click() }, 'Import from file');
+      const firstTime = h('div', { class: 'note', id: 'firsttime', hidden: true },
+        'Nothing is saved in this browser yet. If you saved your data to a file after an earlier run, import it before you start: it brings back your settings and the advertisers already processed.',
+        h('div', { class: 'btns' }, importButton()));
       const showKnown = async () => {
-        const n = Object.keys(await memory.load()).length;
+        const entries = await memory.load();
+        const hist = await durable.get(HISTORY_KEY);
+        const all = Object.keys(entries).length;
+        const n = listKeys(entries).filter((k) => entries[k] && entries[k].confirmed !== false).length;
         known.replaceChildren(` ${n} remembered${MODE === 'console' ? ' on this site' : ''}.`,
-          n ? h('button', { class: 'link', name: 'forget', type: 'button',
-            onclick: async (e) => { e.preventDefault(); await memory.save({}); showKnown(); } }, 'Forget them') : '');
+          all ? h('button', { class: 'link', name: 'forget', type: 'button',
+            onclick: async (e) => { e.preventDefault(); await memory.save({}); book = new Map(); showKnown(); } }, 'Forget them') : '');
+        dataLine.textContent = all ? `${all} advertiser${all === 1 ? '' : 's'} in the database, ${confirmedIn(entries)} of them done.`
+          : 'No advertisers in the database yet.';
+        firstTime.hidden = !!(all || (hist && hist.last) || imported);
       };
       showKnown();
 
@@ -1993,6 +2218,8 @@
       fill(
         unfinished ? h('div', { class: 'note' }, `An unfinished run was found (step ${state.idx + 1}). `,
           h('div', { class: 'btns' }, h('button', { class: 'b primary', name: 'resume', onclick: resume }, 'Resume it'))) : null,
+        firstTime,
+        imported ? h('div', { class: imported.ok ? 'note ok' : 'note', id: 'importmsg' }, imported.text) : null,
         lastRun,
         h('h3', null, 'Advertisers and ad data'), taskBoxes,
         h('h3', null, 'Privacy settings level'), h('div', { class: 'sub last', 'data-last': 'privacy' }), levelBoxes,
@@ -2004,9 +2231,16 @@
           'Only process advertisers that are new since earlier runs.', known),
         option('saveInfo', pref('saveInfo', false), 'Save advertiser details',
           'Keep everything Facebook shows about each advertiser and add CSV export to the report. Advertisers whose ads are already hidden are opened too, to read their details.'),
-        option('saveLog', pref('saveLog', false), 'Save logs',
-          'Keep the full log and add buttons to copy it or save it to a file.'),
+        option('saveLog', pref('saveLog', true), 'Keep the full log',
+          'Keep every log line of the run, not only the last 300. Copy log and Save log are always there, during the run and in the report.'),
         h('div', { class: 'row' }, 'Speed', speed),
+        h('h3', null, 'Saved data'),
+        h('div', { class: 'sub' }, 'Your settings, the advertiser database and the run history are kept in this browser. A file lets you keep a copy, or move them to another browser.'),
+        dataLine,
+        h('div', { class: 'btns' },
+          h('button', { class: 'b', name: 'export', type: 'button',
+            onclick: async () => download(`fb-ad-disable-backup-${fileStamp()}.json`, await exportData(), 'application/json') }, 'Export to file'),
+          importButton(), picker),
         h('div', { class: 'btns' }, h('button', { class: 'b primary', name: 'start', onclick: go }, 'Start')),
         h('div', { class: 'note' }, 'This tab is driven automatically while the run is in progress. Leave it in the foreground and do not click in it.',
           MODE === 'console' ? ' Console mode: when the page reloads and this panel disappears, run the script again to continue.' : ''));
@@ -2043,8 +2277,20 @@
       h('td', null, `${mark(r)} ${r.result}${r.remembered && !/^skipped/.test(r.result) ? ' · remembered' : ''}`));
     const advHead = () => h('thead', null, h('tr', null, h('th', null, 'Advertiser'), h('th', null, 'Details'), h('th', null, 'Result')));
 
+    // The second bar, shown only while advertisers are being processed. null hides it.
+    function paintAdvertisers(p) {
+      if (!advBox) return;
+      advBox.hidden = !p;
+      if (!p) return;
+      const skipped = p.skipped || 0;
+      advBar.style.width = (p.total ? Math.round((p.done / p.total) * 100) : 0) + '%';
+      advLabel.textContent = `Advertisers: ${p.done - skipped} of ${p.total - skipped}${skipped ? ` · ${skipped} skipped (remembered)` : ''}`;
+      paintBar(p.total ? p.done / p.total : 0);
+    }
+
     function showRun() {
       mount();
+      imported = null;
       stepEl = h('div', { class: 'step', id: 'step' }, 'Starting…');
       barEl = h('i');
       pctEl = h('span', { id: 'pct' });
@@ -2066,7 +2312,25 @@
           onclick: () => { stopRequested = true; stepEl.textContent = 'Stopping…'; } }, 'Stop'), logButtons()));
       logEl.scrollTop = logEl.scrollHeight;
       rowsBox.scrollTop = rowsBox.scrollHeight;
+      // After a page load in the middle of an advertiser step, the advertiser bar comes straight back.
+      const unit = buildUnits(state.opts)[state.idx];
+      if (unit && unit.advertisers && state.adv[unit.id]) paintAdvertisers(state.adv[unit.id]);
       ticker = setInterval(paintEta, 1000);
+    }
+
+    // At the end of a run: save everything to a file? Not after a dry run, which changed nothing.
+    function askToSave() {
+      if (state.opts.dryRun) return null;
+      const box = h('div', { class: 'note', id: 'savedata' },
+        'Save your data to a file? It holds your settings, the advertisers processed so far and the run history. Import it from the menu to pick up where you left off, in another browser or after a reinstall.');
+      box.append(h('div', { class: 'btns' },
+        h('button', { class: 'b primary', name: 'savedata', type: 'button', onclick: async () => {
+          const name = `fb-ad-disable-backup-${fileStamp()}.json`;
+          download(name, await exportData(), 'application/json');
+          box.replaceChildren(`Saved as ${name}. To use it, open the menu and choose “Import from file”.`);
+        } }, 'Save to file'),
+        h('button', { class: 'b', name: 'nosave', type: 'button', onclick: () => box.remove() }, 'Not now')));
+      return box;
     }
 
     function showReport() {
@@ -2092,6 +2356,7 @@
           ? `Dry run: ${count('dry')} would change, ${count('already')} already set, ${count('manual')} need a manual check`
           : `${count('changed')} changed, ${count('already')} already set, ${count('manual')} need a manual check`),
         h('div', { class: 'sub' }, 'Facebook can ask for extra confirmation or change its pages, so spot-check the changed settings.'),
+        askToSave(),
         h('ul', null, items),
         details,
         h('div', { class: 'btns' }, copyButton('copyreport', 'Copy report', reportText), logButtons(),
@@ -2109,16 +2374,7 @@
         subEl.textContent = '';
         paintBar();
       },
-      // The second bar, shown only while advertisers are being processed. null hides it.
-      advertisers(p) {
-        if (!advBox) return;
-        advBox.hidden = !p;
-        if (!p) return;
-        const todo = p.total - p.skipped, did = p.done - p.skipped;
-        advBar.style.width = (p.total ? Math.round((p.done / p.total) * 100) : 0) + '%';
-        advLabel.textContent = `Advertisers: ${did} of ${todo}${p.skipped ? ` · ${p.skipped} skipped (remembered)` : ''}`;
-        paintBar(p.total ? p.done / p.total : 0);
-      },
+      advertisers: (p) => paintAdvertisers(p),
       advertiserRow(r) {
         if (!rowsBody || !rowsBody.isConnected) return;
         rowsBody.append(advRow(r));
@@ -2138,9 +2394,12 @@
     async open() {
       if (busy) return;
       state = sane(await store.get());
+      prefs = cleanOptions(await durable.get(PREFS_KEY)) || (state && state.opts) || null;
       ui.showMenu();
     },
     _csv: toCsv, // for the tests
+    _export: exportData,
+    _import: importData,
   };
 
   (async function boot() {
