@@ -51,6 +51,18 @@ npm audit
 npm outdated
 ```
 
+## Backup files
+
+A backup file (**Export to file**) is plain JSON with your settings, the advertiser database and the
+run history. It contains what Facebook showed you about advertisers; treat it like any export of
+your own data.
+
+A file given to **Import from file** is untrusted input. The script reads only the fields it
+writes itself, accepts only the two kinds of advertiser key it uses, caps the length of every text,
+drops addresses that are not https on Facebook's sites, and ignores settings that name a task or
+level it does not have. What it keeps is only ever shown as text. A test imports a hostile file,
+including a `__proto__` key and a `javascript:` link.
+
 ## Releases
 
 A release is built by the Release workflow from the tagged commit, after `npm audit` and the tests

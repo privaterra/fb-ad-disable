@@ -3,9 +3,15 @@
 Notable changes to this project. Versions follow [semantic versioning](https://semver.org/).
 Each release on GitHub carries the section for its version.
 
-## [1.5.1] - unreleased
+## [1.6.0] - unreleased
 
 On the `dev` branch, not released yet.
+
+### Added
+
+- **Export and import of your data** ([#9](https://github.com/privaterra/fb-ad-disable/issues/9)). One file holds your settings, the advertiser database and the run history. The report asks at the end of a run whether to save it; the menu offers to import one when nothing is saved in the browser, and has **Export to file** and **Import from file** at any time. Importing merges, and a file to import is treated as untrusted.
+- **An advertiser database.** The remembered list now holds every advertiser handled, in both advertiser tasks, with what Facebook says about it. An advertiser whose ads are already hidden is no longer opened again just to read its details, which means fewer pages opened per run.
+- The menu's settings are kept on their own, so they survive when a run in progress is discarded.
 
 ### Fixed
 

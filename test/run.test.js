@@ -330,18 +330,18 @@ test('progress bars, advertiser details CSV, saved log and remembered advertiser
   // Issue 2: the log as a file.
   const logFile = await saved(page, 'savelog');
   assert.match(logFile.file, /^fb-ad-disable-log-[\d-]+\.txt$/);
-  assert.match(logFile.text, /^fb-ad-disable 1\.5\.1 log\n/);
+  assert.match(logFile.text, /^fb-ad-disable 1\.6\.0 log\n/);
   assert.match(logFile.text, /Options: \{.*"saveLog":true/);
   assert.match(logFile.text, /\d\d:\d\d:\d\d   6 advertisers found, 6 to process/);
   assert.match(logFile.text, /\d\d:\d\d:\d\d Finished\.\n$/);
   // One formatted line per advertiser, as it is processed.
   assert.match(logFile.text, /\[1\/6\] Data Broker One · Showing ads to you using a list: allowed \| Excluding you from ads using a list: allowed → disabled, remembered\n/);
   assert.match(logFile.text, /\[6\/6\] Broken Page Ltd → failed: Facebook showed “This page isn’t available right now”\n/);
-  assert.match(logFile.text, /\[2\/5\] Acme · Retail company · 1,234 followers · http:\/\/acme\.example\/ → ads hidden\n/);
-  assert.match(logFile.text, /\[\d\/5\] Hooli · Internet company · 3,231,099 followers · http:\/\/hooli\.example\/ → already hidden\n/);
+  assert.match(logFile.text, /\[2\/5\] Acme · Retail company · 1,234 followers · http:\/\/acme\.example\/ → ads hidden, remembered\n/);
+  assert.match(logFile.text, /\[\d\/5\] Hooli · Internet company · 3,231,099 followers · http:\/\/hooli\.example\/ → already hidden, remembered\n/);
   // The list loads as it scrolls and is redrawn from the top after each hide: every advertiser is still reached,
   // and the total is known from the start.
-  assert.equal((logFile.text.match(/→ ads hidden\n/g) || []).length, 4);
+  assert.equal((logFile.text.match(/→ ads hidden, remembered\n/g) || []).length, 4);
   assert.match(logFile.text, /\[1\/5\] Hooli/);
   assert.doesNotMatch(r.seen.text, /no longer shown/);
   // How the list-based result was reached is part of it.
@@ -502,6 +502,134 @@ test('when Facebook opens no advertiser at all, the run says so and moves on', a
   assert.match(r.lists.text, /for every advertiser, however it is opened/);
   assert.equal(r.ai_summaries.status, 'changed', 'the next task still runs');
   assert.deepEqual(events.filter((e) => e.type === 'listuse' || e.type === 'decoy'), []);
+  await context.close();
+});
+
+// ---- export and import (issue 9) ------------------------------------------------------------
+
+test('data is saved to a file at the end of a run and imported in another browser', async () => {
+  // Browser A: a first run, then "Save to file".
+  const a = await browser.newContext();
+  await mockFacebook(a, { inject: true });
+  await fakeUserscriptApi(a);
+  const pageA = await a.newPage();
+  await pageA.goto('https://accountscenter.facebook.com/ads/');
+  await pageA.evaluate(() => window.__openMenu());
+  await panel(pageA).locator('#firsttime').waitFor(); // nothing saved here: the menu offers to import
+  await configureAndStart(pageA, { tasks: ['lists', 'seen'], options: { saveInfo: true } });
+  await report(pageA);
+  await panel(pageA).locator('#savedata', { hasText: 'Save your data to a file?' }).waitFor();
+  const file = await saved(pageA, 'savedata');
+  assert.match(file.file, /^fb-ad-disable-backup-[\d-]+\.json$/);
+  assert.match(await panel(pageA).locator('#savedata').textContent(), /^Saved as fb-ad-disable-backup-/);
+
+  const data = JSON.parse(file.text);
+  assert.deepEqual([data.app, data.format, data.version], ['fb-ad-disable', 1, '1.6.0']);
+  assert.deepEqual(data.options.tasks, ['lists', 'seen']);
+  assert.equal(data.options.saveInfo, true);
+  const keys = Object.keys(data.advertisers);
+  assert.equal(keys.filter((k) => k.startsWith('/ads/audience_based_advertising/')).length, 6);
+  assert.equal(keys.filter((k) => k.startsWith('seen:')).length, 5);
+  const broker = data.advertisers['/ads/audience_based_advertising/1000001/?should_show_back_button=true'];
+  assert.deepEqual([broker.task, broker.name, broker.result, broker.confirmed], ['list-based', 'Data Broker One', 'disabled', true]);
+  assert.equal(data.advertisers['/ads/audience_based_advertising/1000005/?should_show_back_button=true'].confirmed, false, 'no list controls: not done');
+  assert.deepEqual([data.advertisers['seen:acme'].category, data.advertisers['seen:acme'].followers, data.advertisers['seen:acme'].result],
+    ['Retail company', '1,234 followers', 'ads hidden']);
+  assert.match(data.history.tasks.lists.note, /3 disabled/);
+  assert.equal(data.history.last.finished, true);
+  await a.close();
+
+  // Browser B: nothing saved. The menu says so and offers to import.
+  const b = await browser.newContext();
+  const events = await mockFacebook(b, { inject: true });
+  await fakeUserscriptApi(b);
+  const page = await b.newPage();
+  const p = panel(page);
+  await page.goto('https://www.facebook.com/settings/');
+  await page.evaluate(() => window.__openMenu());
+  await p.locator('#firsttime', { hasText: 'import it before you start' }).waitFor();
+  assert.match(await p.locator('#known').textContent(), /0 remembered/);
+  assert.equal(await p.locator('input[name="saveInfo"]').isChecked(), false);
+
+  await p.locator('input[name="importfile"]').setInputFiles({ name: 'my-backup.json', mimeType: 'application/json', buffer: Buffer.from(file.text) });
+  await p.locator('#importmsg', { hasText: 'Imported my-backup.json: settings, 11 advertisers (11 new here), run history.' }).waitFor();
+  assert.equal(await p.locator('#firsttime').isVisible(), false);
+  await p.locator('#known', { hasText: '4 remembered' }).waitFor();
+  assert.match(await p.locator('#saved').textContent(), /^11 advertisers in the database, 9 of them done\.$/);
+  // The settings came along too.
+  assert.equal(await p.locator('input[name="saveInfo"]').isChecked(), true);
+  assert.deepEqual(await p.locator('input[name="task"]:checked').evaluateAll((els) => els.map((e) => e.value)), ['lists', 'seen']);
+  assert.match(await p.locator('[data-last="lists"]').textContent(), /Last run .+: Changed: 3 disabled/);
+  // Importing the same file again adds nothing.
+  await p.locator('input[name="importfile"]').setInputFiles({ name: 'my-backup.json', mimeType: 'application/json', buffer: Buffer.from(file.text) });
+  await p.locator('#importmsg', { hasText: '11 advertisers (0 new here)' }).waitFor();
+
+  // The next run in B picks up where A left off.
+  await configureAndStart(page, {});
+  const r = await report(page);
+  assert.match(r.lists.text, /0 disabled, 0 needed no change, 1 had no list controls, 1 failed \(of 6\), 4 skipped as remembered/);
+  assert.equal(events.filter((e) => e.type === 'listuse').length, 0, 'the advertisers done in A are not opened again');
+  // Hooli's ads are hidden; its details come from the imported database, without opening it.
+  assert.match(await p.locator('#advertisers tbody tr', { hasText: 'Hooli' }).textContent(), /Internet company · 3,231,099 followers.*already hidden/);
+  assert.deepEqual(events.filter((e) => e.type === 'decoy'), []);
+  await b.close();
+});
+
+test('a file to import is treated as untrusted: only what the script knows is kept', async () => {
+  const context = await browser.newContext();
+  await mockFacebook(context, { inject: true });
+  await fakeUserscriptApi(context);
+  const page = await context.newPage();
+  const p = panel(page);
+  await page.goto('https://www.facebook.com/settings/');
+  await page.evaluate(() => window.__openMenu());
+  await p.locator('button[name="start"]').waitFor();
+
+  // Not a backup at all: said in the menu, nothing changed.
+  for (const [name, body, why] of [
+    ['notes.txt', 'just some notes', 'it is not an fb-ad-disable backup file'],
+    ['other.json', '{"app":"something-else","format":1}', 'it is not an fb-ad-disable backup file'],
+    ['newer.json', '{"app":"fb-ad-disable","format":99}', 'it was made by a newer version of fb-ad-disable: update first'],
+  ]) {
+    await p.locator('input[name="importfile"]').setInputFiles({ name, mimeType: 'application/json', buffer: Buffer.from(body) });
+    await p.locator('#importmsg', { hasText: `Could not import ${name}: ${why}.` }).waitFor();
+  }
+  assert.match(await p.locator('#known').textContent(), /0 remembered/);
+
+  const hostile = JSON.stringify({
+    app: 'fb-ad-disable', format: 1,
+    options: { tasks: ['lists', 'wipe-account'], level: 'max' }, // an unknown task: these are not our options
+    advertisers: {
+      'javascript:alert(1)': { name: 'bad key' },
+      constructor: { name: 'bad key' },
+      'seen:evil': { name: '<img src=x onerror="window.__pwned=1">', link: 'javascript:window.__pwned=1', at: 9e15, confirmed: 'yes', extra: { deep: true } },
+      '/ads/audience_based_advertising/9/': { name: 'A'.repeat(5000), about: 42, link: 'https://evil.example/' },
+      'seen:notanobject': 'text',
+    },
+    history: { last: { at: 5, version: 'v'.repeat(500) }, tasks: { lists: { at: 5, note: 'n'.repeat(5000), level: 'root' }, evil: { at: 5, note: 'x' } } },
+  }).replace('"advertisers":{', '"advertisers":{"__proto__":{"polluted":true},');
+  const result = await page.evaluate(async (text) => {
+    const got = await window.__fbAdDisable._import(text);
+    return { got, kept: JSON.parse(await window.__fbAdDisable._export()), polluted: {}.polluted, pwned: window.__pwned };
+  }, hostile);
+
+  assert.deepEqual(result.got, { options: false, advertisers: 2, added: 2, history: true });
+  assert.equal(result.polluted, undefined);
+  assert.deepEqual(Object.keys(result.kept.advertisers).sort(), ['/ads/audience_based_advertising/9/', 'seen:evil']);
+  const evil = result.kept.advertisers['seen:evil'];
+  assert.deepEqual(Object.keys(evil).sort(), ['about', 'advertiser_id', 'at', 'category', 'confirmed', 'followers', 'link', 'list_uses', 'name', 'result', 'task', 'website']);
+  assert.equal(evil.link, '', 'a javascript: address is dropped');
+  assert.ok(evil.at <= Date.now(), 'a date in the future is pulled back');
+  const long = result.kept.advertisers['/ads/audience_based_advertising/9/'];
+  assert.deepEqual([long.name.length, long.about, long.link], [200, '', '']);
+  assert.deepEqual(Object.keys(result.kept.history.tasks), ['lists']);
+  assert.deepEqual([result.kept.history.tasks.lists.note.length, result.kept.history.tasks.lists.level, result.kept.history.last.version.length], [300, '', 20]);
+  assert.equal(result.kept.options, null, 'options with an unknown task are not taken');
+
+  // Shown as text in the menu, never as markup.
+  await page.evaluate(() => window.__openMenu());
+  await p.locator('#saved', { hasText: '2 advertisers in the database' }).waitFor();
+  assert.equal(await page.evaluate(() => window.__pwned), undefined);
   await context.close();
 });
 

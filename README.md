@@ -72,11 +72,12 @@ Console mode is fine for a single task such as *Disable list-based advertisers*,
 | **Advertisers and ad data** | Tick the tasks to run (table below). |
 | **Privacy settings level** | Default, Moderate or Max (table below). |
 | **Dry run** | Report what would change without changing anything. |
-| **Remember processed advertisers** (on) | Keep a list of the list-based advertisers confirmed as disabled, for later runs. |
-| **Skip remembered advertisers** (on) | Only process advertisers that are new since earlier runs. The menu shows how many are remembered, with **Forget them** to clear the list. |
+| **Remember processed advertisers** (on) | Keep the advertiser database: every advertiser handled, what Facebook says about it and what happened. |
+| **Skip remembered advertisers** (on) | Leave alone the advertisers the database has as done, and only open new ones. The menu shows how many are remembered, with **Forget them** to clear the database. |
 | **Save advertiser details** (off) | Keep everything Facebook shows about each advertiser and add CSV export to the report. The advertiser table itself is always shown. |
 | **Keep the full log** (on) | Keep every log line of the run instead of the last 300. **Copy log** and **Save log** are always available, whatever this is set to. |
 | **Speed** | Pause between clicks. Use *Slow* if steps fail on a slow connection. |
+| **Saved data** | **Export to file** and **Import from file**: your settings, the advertiser database and the run history as one file. See below. |
 
 ### Last run and rate limiting
 
@@ -120,15 +121,35 @@ When a step fails, the report keeps **What the page showed**: the text and contr
 
 <img src="docs/report.png" alt="Report with the advertiser details table" width="372">
 
-### Remembered advertisers
+### The advertiser database
 
-With **Remember processed advertisers** on, each list-based advertiser is added to a list once the page itself confirms it is disabled (an "Allow" button is shown and no "Don't allow" button is left). With **Skip remembered advertisers** on, later runs leave those advertisers alone and only open the new ones, which makes repeat runs much shorter.
+With **Remember processed advertisers** on, every advertiser the script handles goes into a database kept in this browser: its name, what Facebook says about it (category, description, followers, website, list uses), what happened, and when.
 
-- The list is kept in this browser only: in the extension's or userscript manager's storage, or in the site's local storage in console mode. It is never sent anywhere.
-- An advertiser the script could not confirm (a failure, or no list-use buttons found) is not remembered, so it is checked again next time.
-- A dry run does not add to the list.
-- Untick **Skip remembered advertisers** to re-check everyone, or use **Forget them** in the menu to clear the list.
-- Only the list-based advertiser task uses this. Advertisers whose ads are already hidden are skipped by Facebook's own page (their button no longer says "Hide ads").
+An advertiser counts as **done** once the page itself confirms it: for a list-based advertiser, an "Allow" button is shown and no "Don't allow" button is left; for an advertiser you saw ads from, its ads are hidden. With **Skip remembered advertisers** on, later runs use that:
+
+- a list-based advertiser that is done is not opened again, which makes repeat runs much shorter;
+- an advertiser whose ads are hidden is not opened again just to read its details: they come from the database.
+
+Fewer pages opened also means less chance of running into Facebook's rate limit.
+
+- An advertiser the script could not confirm (a failure, or no list-use buttons found) is in the database but not marked done, so it is checked again next time.
+- A dry run does not add to the database.
+- Untick **Skip remembered advertisers** to re-check everyone, or use **Forget them** in the menu to clear the database.
+- The database never leaves this browser unless you export it. In console mode it is kept in the site's local storage, separately for `www.facebook.com` and `accountscenter.facebook.com`.
+
+### Saving your data to a file, and importing it
+
+Everything the script keeps lives in the browser: in the extension's storage, the userscript manager's, or the site's. It is lost when that storage is: a new browser or profile, a reinstall, or loading the extension from a different folder (Chrome treats that as a new extension). A file gets around that.
+
+- **When a run finishes**, the report asks: *Save your data to a file?* **Save to file** downloads `fb-ad-disable-backup-<date>.json`. It is not asked after a dry run, which changed nothing.
+- **At the start**, when nothing is saved in this browser, the top of the menu says so and offers **Import from file**.
+- **At any time**, the **Saved data** section of the menu has **Export to file** and **Import from file**.
+
+The file holds three things: your settings (the menu's choices), the advertiser database, and the run history (when each section last ran and how it went). It is plain JSON that you can read. It holds no passwords and nothing about your Facebook account beyond the advertisers Facebook listed for you.
+
+Importing **merges**: for an advertiser or a section that both the file and the browser have, the more recent entry stays, and importing the same file twice adds nothing. The settings in the file replace the menu's. The menu then says what was imported, for example "Imported my-backup.json: settings, 215 advertisers (198 new here), run history."
+
+A file to import is treated as untrusted: only the fields the script knows are read, text is capped in length, and anything else is dropped.
 
 ### Advertiser details (CSV)
 
