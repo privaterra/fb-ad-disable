@@ -13,7 +13,7 @@ Fixes for what a live run of 1.6.0 showed.
 - **Disable list-based advertisers ended early without saying so.** When Facebook stopped showing the rest of the list part-way (159 of 226 in the live run), the step reported "of 159" as if that were all. It now opens the list further, reloads it up to twice, and otherwise reports how many advertisers were not reached, as a step that needs another run.
 - **Wrong entries in the advertiser database are removed.** Entries of "Hide advertisers you have seen" that an earlier version filed under the wrong name are dropped when the database is read, with a line in the log, so those advertisers are read again.
 - A hide only counts when the advertiser's page shows it as hidden afterwards; otherwise the report says it was clicked but not confirmed.
-- An advertiser's name is no longer repeated as its category ("TryLumic · TryLumic"), and a list-based advertiser's name and handle are no longer run together ("Hyatt@hyatt" is now "Hyatt @hyatt").
+- An advertiser's name is no longer repeated as its category ("TryLumic · TryLumic"), and a list-based advertiser's name and handle are no longer run together (`Hyatt@hyatt` is now `Hyatt @hyatt`).
 
 ## [1.6.0] - 2026-11-18
 
