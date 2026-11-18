@@ -3,6 +3,18 @@
 Notable changes to this project. Versions follow [semantic versioning](https://semver.org/).
 Each release on GitHub carries the section for its version.
 
+## [1.6.1] - 2026-11-18
+
+Fixes for what a live run of 1.6.0 showed.
+
+### Fixed
+
+- **Hide advertisers you have seen: lines of an advertiser's own page were clicked as if they were advertisers.** Facebook draws an opened advertiser over the list inside the same pop-up and keeps the covered list in the page. The script could then open one advertiser on top of another, file an advertiser under the name of the list ("Advertisers you saw ads from") or of another advertiser, and click the buttons on an advertiser's page: **Facebook Page**, **Website** and **Unhide** (it hid the advertiser again afterwards). A row now only counts as an advertiser when it is among the list's rows that are actually in front, an advertiser only counts as opened once its own **Hide ads** or **Unhide** is in front, and nothing else in the pop-up is clicked. The page reloads this caused between advertisers are gone too.
+- **Disable list-based advertisers ended early without saying so.** When Facebook stopped showing the rest of the list part-way (159 of 226 in the live run), the step reported "of 159" as if that were all. It now opens the list further, reloads it up to twice, and otherwise reports how many advertisers were not reached, as a step that needs another run.
+- **Wrong entries in the advertiser database are removed.** Entries of "Hide advertisers you have seen" that an earlier version filed under the wrong name are dropped when the database is read, with a line in the log, so those advertisers are read again.
+- A hide only counts when the advertiser's page shows it as hidden afterwards; otherwise the report says it was clicked but not confirmed.
+- An advertiser's name is no longer repeated as its category ("TryLumic · TryLumic"), and a list-based advertiser's name and handle are no longer run together ("Hyatt@hyatt" is now "Hyatt @hyatt").
+
 ## [1.6.0] - 2026-11-18
 
 ### Added
@@ -68,5 +80,6 @@ Development versions, not published.
 - **1.1.0** - Remembered advertisers, log saving, progress bars with time left, advertiser details as CSV.
 - **1.0.0** - First version: the menu, the advertiser and ad-data tasks, the three privacy levels, dry run and the report.
 
+[1.6.1]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.6.1
 [1.6.0]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.6.0
 [1.5.0]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.5.0

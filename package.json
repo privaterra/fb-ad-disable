@@ -1,6 +1,6 @@
 {
   "name": "fb-ad-disable",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "private": true,
   "license": "MIT",
   "description": "Opt out of advertiser lists, restrict ad data use and tighten Facebook privacy settings from one menu.",

@@ -80,58 +80,83 @@ const pages = {
     m.main().append(m.el('h1', null, m.span('Ad preferences')),
       m.el('div', { style: 'display:flex;justify-content:space-between' }, m.el('h2', null, m.span('Ad topics')),
         m.el('div', { role: 'button', onclick: () => m.rec('decoy', { what: 'See all on the page behind the pop-up' }) }, m.span('See all'))));
-    // An advertiser's panel says who they are; its button is "Hide ads", or "Unhide" once hidden.
-    // Which advertisers are hidden survives a reload. The list loads two entries at a time as it
-    // is scrolled. After a hide it is redrawn from the top with the hidden advertisers first, so
-    // the ones still to do are further down again, as seen on the real site.
+    // The pop-up is built the way the real one is (seen in live runs):
+    //  - ONE dialog holds the list and, drawn over it, the page of the advertiser that was opened.
+    //    The covered list stays in the document, so its rows can still be found and clicked by code.
+    //  - An advertiser's page has list items of its own: its name and category, its description,
+    //    "Facebook Page", "Website", "Ads from this advertiser", and the line with "Unhide" or
+    //    "Hide ads". None of them is an advertiser, and three of them hold a button that does harm
+    //    when clicked: it leaves for another site, or unhides the advertiser.
+    //  - The list loads two entries at a time as it is scrolled. After a hide it is redrawn from
+    //    the top with the hidden advertisers first, so the ones still to do are further down again.
+    // Which advertisers are hidden survives a reload.
     const DATA = [['Acme', 'Retail company', '1,234 followers', 'http://acme.example/'],
       ['Globex', 'Energy company', '56,789 followers', 'http://globex.example/'],
       ['Initech', 'Software company', '321 followers', 'http://initech.example/'],
       ['Umbrella', 'Pharmaceutical company', '9,001 followers', 'http://umbrella.example/'],
       ['Hooli', 'Internet company', '3,231,099 followers', 'http://hooli.example/']];
     const hiddenNames = () => JSON.parse(sessionStorage.getItem('mock:hidden') || '["Hooli"]');
-    const box = m.el('div', { style: 'height:30px;overflow:auto' });
-    let loaded = 2;
+    const setHidden = (names) => sessionStorage.setItem('mock:hidden', JSON.stringify(names));
+    const HIDDEN = 'You chose to hide all ads from this advertiser.';
+    const layer = (...content) => m.el('div', { style: 'position:absolute;inset:0;overflow:auto;background:#fff;padding:8px' }, ...content);
+    const pop = m.el('div', { role: 'dialog', style: 'position:fixed;top:30px;left:30px;width:440px;height:420px;border:2px solid #888;background:#fff' });
+    const box = m.el('div', { style: 'height:40px;overflow:auto' });
+    let loaded = 2, open = 0;
     box.addEventListener('scroll', () => {
       if (box.scrollTop + box.clientHeight < box.scrollHeight - 2 || loaded >= DATA.length) return;
       loaded += 2;
       render();
     });
+    const redraw = () => { loaded = 2; render(); box.scrollTop = 0; };
     const advertiser = ([name, category, followers, site]) => {
       const hidden = () => hiddenNames().includes(name);
-      return m.el('div', { role: 'button', tabindex: '0', onclick: () => {
-        const status = m.el('div', { role: 'listitem' }, m.span(hidden() ? 'You chose to hide all ads from this advertiser.' : ''));
+      const openPage = () => {
+        if (open) m.rec('decoy', { what: `opened ${name} while another advertiser was open` });
+        open++;
+        const status = m.span(hidden() ? HIDDEN : 'You may see ads from this advertiser.');
         const btn = m.button(hidden() ? 'Unhide' : 'Hide ads', () => {
-          if (btn.textContent !== 'Hide ads') return m.rec('decoy', { what: 'Unhide clicked' });
-          m.rec('hide', { name });
-          sessionStorage.setItem('mock:hidden', JSON.stringify([...hiddenNames(), name]));
-          status.firstChild.textContent = 'You chose to hide all ads from this advertiser.';
-          btn.querySelector('span').textContent = 'Unhide';
-          loaded = 2;
-          render();
-          box.scrollTop = 0;
+          if (btn.textContent === 'Hide ads') {
+            m.rec('hide', { name });
+            setHidden([...hiddenNames(), name]);
+          } else { // what a click on this line's button does on the real site
+            m.rec('decoy', { what: `Unhide clicked for ${name}` });
+            setHidden(hiddenNames().filter((x) => x !== name));
+          }
+          status.textContent = hidden() ? HIDDEN : 'You may see ads from this advertiser.';
+          btn.querySelector('span').textContent = hidden() ? 'Unhide' : 'Hide ads';
+          redraw();
         });
-        const panel = m.dialog(name, 'Back',
-          m.el('div', { role: 'listitem' }, m.span(category)), m.el('div', { role: 'listitem' }, m.span('We make things for ' + name)),
-          m.button('Facebook Page', () => {}), m.button(followers, () => {}), m.button('Website', () => {}), m.button(site, () => {}),
-          m.el('div', { role: 'listitem' }, m.span('Ads from this advertiser')), status, btn);
-        // The panel stays on screen for a moment after "Back", as an animated panel does. Its lines
-        // (category, description…) are list items too, and must never be taken for advertisers.
-        const back = panel.querySelector('[aria-label="Back"]');
-        const instant = back.cloneNode(true); // drops the helper's immediate close
-        back.replaceWith(instant);
-        instant.addEventListener('click', () => setTimeout(() => panel.remove(), 400));
-      } }, m.el('div', { style: 'height:22px' }, m.span(name), m.span(hidden() ? 'You hid their ads' : '')));
+        const away = (what) => () => m.rec('decoy', { what: `${what} of ${name} opened` });
+        const page = layer(
+          // The page stays on screen for a moment after "Back", as an animated page does.
+          m.el('div', { role: 'button', 'aria-label': 'Back', onclick: () => setTimeout(() => { page.remove(); open--; }, 400) }, '←'),
+          m.el('h2', null, m.span(name)),
+          m.el('div', { role: 'listitem' }, m.el('div', null, m.span(name)), m.el('div', null, m.span(category))),
+          m.el('div', { role: 'listitem' }, m.span('We make things for ' + name)),
+          m.el('div', { role: 'listitem' }, m.el('div', { role: 'button', tabindex: '0', onclick: away('the Facebook Page') },
+            m.el('div', null, m.span('Facebook Page')), m.el('div', null, m.span(followers)))),
+          m.el('div', { role: 'listitem' }, m.el('div', { role: 'button', tabindex: '0', onclick: away('the website') },
+            m.el('div', null, m.span('Website')), m.el('div', null, m.span(site)))),
+          m.el('div', { role: 'listitem' }, m.span('Ads from this advertiser')),
+          m.el('div', { role: 'listitem' }, m.el('div', null, status), btn));
+        pop.append(page);
+      };
+      return m.el('div', { role: 'listitem' }, m.el('div', { role: 'button', tabindex: '0', onclick: openPage },
+        m.el('div', { style: 'height:22px' }, m.span(name), m.span(hidden() ? 'You hid their ads' : ''))));
     };
     const sorted = () => [...DATA].sort((a, b) => hiddenNames().includes(b[0]) - hiddenNames().includes(a[0]));
     const render = () => box.replaceChildren(...sorted().slice(0, loaded).map(advertiser));
     render();
-    m.dialog('Advertisers you saw ads from', 'Close',
+    pop.append(layer(
+      m.el('div', { role: 'button', 'aria-label': 'Close', onclick: () => pop.remove() }, 'x'),
       m.el('div', { role: 'button', 'aria-label': 'Back', onclick: () => m.rec('decoy', { what: 'left the advertisers list' }) }, '←'),
+      m.el('h2', null, m.span('Advertisers you saw ads from')),
+      m.el('div', null, m.span('Advertisers you saw ads from')),
       m.el('p', null, m.span('View and hide ads from advertisers you saw ads from.')),
       m.el('div', { role: 'button', onclick: () => m.rec('decoy', { what: 'filter' }) }, m.span('All advertisers')),
       m.el('div', { role: 'button', onclick: () => m.rec('decoy', { what: 'filter' }) }, m.span('All accounts')),
-      box);
+      box));
+    m.attach(pop);
   },
 
   // ---- accountscenter: off-Meta activity --------------------------------

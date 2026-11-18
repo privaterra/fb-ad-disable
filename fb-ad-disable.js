@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FB Ad Disable & Privacy Hardener
 // @namespace    https://github.com/privaterra/fb-ad-disable
-// @version      1.6.0
+// @version      1.6.1
 // @description  Opt out of advertiser lists, restrict ad data use and tighten Facebook privacy settings from one menu.
 // @license      MIT
 // @homepageURL  https://github.com/privaterra/fb-ad-disable
@@ -32,7 +32,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.6.0';
+  const VERSION = '1.6.1';
   const TAG = '[fb-ad-disable]';
   const KEY = 'fbAdDisableState';
   const MEMORY_KEY = 'fbAdDisableAdvertisers';
@@ -244,9 +244,19 @@
 
   // List-based advertisers confirmed disabled in earlier runs: { key: { name, result, at } }.
   const memory = {
+    // Versions up to 1.6.0 could file an entry of "Hide advertisers you have seen" under the wrong
+    // name: a line of an advertiser's own page ("Website") was taken for an advertiser, or an
+    // advertiser got the name and details of the page that happened to be open. Such an entry is
+    // told by its key not being its name. It is left out, so that the advertiser is read again.
+    dropped: 0,
     load: async () => {
       const m = await durable.get(MEMORY_KEY);
-      return m && typeof m === 'object' && !Array.isArray(m) ? m : {};
+      if (!m || typeof m !== 'object' || Array.isArray(m)) return {};
+      const misfiled = ([key, e]) => key.startsWith('seen:') && (!e || typeof e !== 'object' || 'seen:' + norm(e.name) !== key);
+      const entries = Object.entries(m);
+      const kept = entries.filter((x) => !misfiled(x));
+      memory.dropped = entries.length - kept.length;
+      return memory.dropped ? Object.fromEntries(kept) : m;
     },
     save: (m) => durable.set(MEMORY_KEY, m),
   };
@@ -366,6 +376,9 @@
     });
   }
   const topLayer = () => dialogs().filter(inFront).pop() || null;
+  // The same test for a control or a row: is it what a person would see and click there, or is it
+  // covered by something drawn over it? Facebook leaves covered pages of a pop-up in the document.
+  const shown = (el) => visible(el) && inFront(el.closest('[role="button"],button,a,[role="link"]') || el);
 
   function searchText(root, needles, mode) {
     const out = [];
@@ -492,6 +505,14 @@
   }
 
   const say = (el) => (el.getAttribute('aria-label') || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 70);
+  // The same, with a space between the pieces of text of a row: "Hyatt @hyatt", not "Hyatt@hyatt".
+  const sayRow = (el) => {
+    if (el.getAttribute('aria-label')) return say(el);
+    const parts = [];
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) { const text = n.nodeValue.trim(); if (text) parts.push(text); }
+    return parts.join(' ').replace(/\s+/g, ' ').slice(0, 70);
+  };
 
   // Elements that appeared after the last row clicks: the pop-up a row opened.
   let fresh = [];
@@ -728,17 +749,21 @@
 
   // What an open advertiser panel says about the advertiser: the lines between its heading
   // and the ad controls, sorted into category, description, followers and website.
-  function advertiserInfo(root) {
+  // With `from` (the heading that carries the advertiser's name) reading starts there: the root
+  // may hold more than this one advertiser's page.
+  function advertiserInfo(root, from) {
     const stop = [...t('hideAds'), ...t('unhide'), ...t('hidden'), ...t('theyUploaded'), ...t('dontAllow'), 'ads from this advertiser'];
     const lines = [];
-    let name = '';
+    let name = from ? clip(from.textContent, 140) : '';
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    if (from) walker.currentNode = from;
     for (let n = walker.nextNode(); n && lines.length < 12; n = walker.nextNode()) {
       const el = n.parentElement;
       const text = clip(n.nodeValue, 140);
-      if (text.length < 2 || !el || /^(SCRIPT|STYLE|NOSCRIPT)$/.test(el.tagName) || !visible(el)) continue;
+      if (text.length < 2 || !el || /^(SCRIPT|STYLE|NOSCRIPT)$/.test(el.tagName) || !visible(el) || (from && from.contains(n))) continue;
       if (!name) { if (el.closest('h1,h2,[role="heading"]')) name = text; continue; }
       if (hit(norm(text), stop, 'includes')) break;
+      if (norm(text) === norm(name)) continue; // the page repeats the name under its heading
       if (!lines.includes(text)) lines.push(text);
     }
     const followers = lines.find((x) => /\d/.test(x) && /\b(followers?|likes?|members?)\b/i.test(x)) || '';
@@ -1079,13 +1104,17 @@
         `. Advertisers opened by ${ls.way === 'direct' ? 'their own address' : ls.way === 'press' ? 'a full mouse click' : 'a click'}; ` +
         `“They uploaded or used a list” panel opened on ${tally.panel || 0}`;
       const bare = tally.bare ? `, ${tally.bare} had no list controls` : '';
-      const detail = o.dryRun
+      const all = done.size + (ls.left || 0);
+      // Advertisers that were listed but never reached: the step is not finished, and says so.
+      const left = ls.left ? `. ${ls.left} of the ${all} advertisers were not reached: Facebook stopped showing the rest of the list. ` +
+        `Run this task again${o.remember ? '; the ones done are remembered' : ''}` : '';
+      const detail = (o.dryRun
         ? `${tally.dry} of ${done.size} advertisers would be disabled${bare}${tally.failed ? `, ${tally.failed} failed` : ''}${skipped}`
-        : `${tally.changed} disabled, ${tally.none} needed no change${bare}, ${tally.failed} failed (of ${done.size})${skipped}`;
+        : `${tally.changed} disabled, ${tally.none} needed no change${bare}, ${tally.failed} failed (of ${done.size})${skipped}`) + left;
       // Nothing recognised on any advertiser page means the labels are wrong, not that all is well.
       const lost = tally.failed + tally.bare > 0 && tally.changed + tally.none + tally.dry === 0;
-      const status = lost ? 'manual' : o.dryRun ? 'dry' : tally.changed ? 'changed' : 'already';
-      return { status, detail, seen: tally.failed + tally.bare ? state.listsSeen : '', limited: !!ls.limited };
+      const status = lost || ls.left ? 'manual' : o.dryRun ? 'dry' : tally.changed ? 'changed' : 'already';
+      return { status, detail, seen: tally.failed + tally.bare + (ls.left || 0) ? state.listsSeen : '', limited: !!ls.limited };
     };
 
     // ---- direct: every advertiser's page is loaded by its address -----------------------------
@@ -1160,20 +1189,30 @@
       }
     };
 
+    // Opens the list further, "See more" by "See more", until `until()` is true or nothing more
+    // comes. `patient` waits a little for a "See more" that is slow to show, as it is when
+    // Facebook answers slowly.
+    const grow = async (until, patient) => {
+      for (let i = 0, stale = 0, n = anchors().length; i < 80 && stale < 2 && !until(); i++) {
+        if (!(await expand())) {
+          if (!patient) break;
+          await sleep(1500);
+        }
+        const now = anchors().length;
+        stale = now > n ? 0 : stale + 1;
+        n = now;
+      }
+      return until();
+    };
     // Count first: open the whole list so the advertiser bar knows its total.
     ui.progress('Counting advertisers…');
-    for (let i = 0, stale = 0, n = anchors().length; i < 80 && stale < 2; i++) {
-      if (!(await expand())) break;
-      const now = anchors().length;
-      stale = now > n ? 0 : stale + 1;
-      n = now;
-    }
+    await grow(() => false, false);
     const seenKeys = new Set(ls.all.map((x) => x.key));
     for (const a of anchors()) {
       const key = keyOf(a);
       if (seenKeys.has(key)) continue;
       seenKeys.add(key);
-      ls.all.push({ key, href: a.href, name: say(a.closest('[role="listitem"]') || a) || key });
+      ls.all.push({ key, href: a.href, name: sayRow(a.closest('[role="listitem"]') || a) || key });
     }
     if (o.skipKnown) {
       let skipped = 0;
@@ -1202,12 +1241,25 @@
       const next = anchors().find((a) => !done.has(keyOf(a)));
       if (!next) {
         if (done.size && !anchors().length && (!atHome() || broken())) throw new Renav('the advertiser list is no longer open', done.size);
+        // Nothing left on screen is not the end while advertisers that were listed are still to do:
+        // Facebook then shows less of the list than it did. Open it further; failing that, load the
+        // page afresh, as long as each fresh load gets further; after that, say how many are left.
+        const left = ls.all.filter((x) => !done.has(x.key)).length;
+        if (left) {
+          if (await grow(() => anchors().some((a) => !done.has(keyOf(a))), true)) continue;
+          const stall = ls.stall || (ls.stall = { at: -1, n: 0 });
+          if (done.size > stall.at) { stall.at = done.size; stall.n = 0; }
+          if (++stall.n <= 2) { await save(); throw new Renav('the list stopped showing its remaining advertisers', done.size); }
+          ls.left = left;
+          ls.limited = true;
+          state.listsSeen = state.listsSeen || snapshot();
+        }
         break;
       }
       const started = Date.now();
       const key = keyOf(next);
       const item = next.closest('[role="listitem"]');
-      const name = say(item || next) || key;
+      const name = sayRow(item || next) || key;
       const rec = { task: 'list-based', name, advertiser_id: advertiserId(next.href), link: next.href,
         list_text: clip((item || next).textContent, 300) };
       const nav = { depth: 0 };
@@ -1247,14 +1299,22 @@
   }
 
   // Walks a list one entry at a time: open it, run `action`, come back.
-  //   action()  -> { status: 'changed' | 'already', info }
+  //   action(got, name) -> { status: 'changed' | 'already', info, verify }
   //   words     - how to phrase the result from the counts
-  //   each()    - told about every entry: (name, outcome, done, total, info, error)
+  //   each()    - told about every entry: (name, outcome, done, total, info, error, confirmed)
   //   already() - true for an entry that needs no visit
-  async function drillList(doneKey, action, { words, each = () => {}, ignore = [], already } = {}) {
+  //   ready()   - what shows that the page of an opened entry is in front (its control), or null.
+  //               With it, an entry only counts as opened once that is seen.
+  //
+  // Facebook draws the page of an opened entry over the list, inside the same pop-up, and leaves
+  // the covered list in the document. The opened page has list items of its own ("Facebook Page",
+  // "Website", the line with "Unhide"…), some with a button that does harm when clicked. So what
+  // an entry is gets decided the way a person would: only rows that sit with the rows in front,
+  // and only while those are in front. Nothing else in the pop-up is ever clicked as an entry.
+  async function drillList(doneKey, action, { words, each = () => {}, ignore = [], already, ready } = {}) {
     const scope = () => topLayer() || document.body;
     const skip = [...t('back'), ...t('close'), ...t('seeAll'), ...t('seeMore'), ...t('confirm'), ...ignore];
-    const items = () => {
+    const all = () => {
       const list = [...scope().querySelectorAll('[role="listitem"],[role="row"]')].filter((el) => visible(el) && norm(el.textContent));
       if (list.length || !topLayer()) return list;
       // A pop-up whose entries are plain buttons or links.
@@ -1267,31 +1327,35 @@
     const keyOf = (el) => norm(firstText(el));
     const done = new Set(state[doneKey] || []);
     const names = new Set(state[doneKey + 'Names'] || []); // every entry the list has shown
-    const count = state[doneKey + 'Count'] || (state[doneKey + 'Count'] = { changed: 0, dry: 0, same: 0, failed: 0 });
+    const count = state[doneKey + 'Count'] || (state[doneKey + 'Count'] = { changed: 0, dry: 0, same: 0, failed: 0, unsure: 0 });
+    count.unsure = count.unsure || 0; // a run saved by an earlier version has no such count
     let fails = 0, seen = '', note = '';
 
-    // Is the list what is on screen? The panel of a single entry also contains list-like lines
-    // (an advertiser's category, its description). Taking those for entries books every advertiser
-    // twice, so an entry is only ever picked while most of what is listed is known to be the list.
-    const listShowing = () => {
-      const keys = items().map(keyOf);
-      if (!keys.length) return false;
-      if (!names.size) return true; // the first look, right after the list was opened
-      const known = keys.filter((k) => names.has(k)).length;
-      return known >= Math.min(3, names.size, keys.length) && known * 2 >= keys.length;
+    // The element that holds the list's rows, while the list is what is in front; null otherwise.
+    // Two rows known to be entries (any row, on the first look) must be in front: an opened page
+    // shows one known name at most, the entry's own. And no opened page may be in front.
+    const listBox = () => {
+      const front = all().filter((el) => (!names.size || names.has(keyOf(el))) && shown(el));
+      if (new Set(front.map(keyOf)).size < Math.min(2, names.size || 1)) return null;
+      if (ready && ready()) return null;
+      let box = front[0].parentElement;
+      for (const el of front) while (box && !box.contains(el)) box = box.parentElement;
+      return box;
     };
+    const rows = () => { const box = listBox(); return box ? all().filter((el) => box.contains(el)) : []; };
+    const listShowing = () => !!listBox();
     const learn = () => {
-      if (listShowing()) for (const el of items()) names.add(keyOf(el));
+      for (const el of rows()) names.add(keyOf(el));
       state[doneKey + 'Names'] = [...names];
       return names.size;
     };
-    // Close whatever is in front of the list: its own Back button, one press at a time, giving a
-    // panel that closes slowly the time to go before pressing anything else.
+    // Close whatever is in front of the list: the Back button of the page in front, one press at a
+    // time, giving a page that closes slowly the time to go before pressing anything else.
     const backToList = async () => {
       for (let i = 0; i < 4 && !listShowing(); i++) {
-        if (await waitFor(listShowing, i ? 3000 : 600).catch(() => false)) break;
-        const layer = topLayer();
-        const btn = (layer && findLabel(t('back'), layer).pop()) || findLabel(t('back')).pop();
+        if (await waitFor(listShowing, i ? 3000 : 1000).catch(() => false)) break;
+        const backs = findLabel(t('back'), scope());
+        const btn = backs.filter(shown).pop() || backs.pop() || findLabel(t('back')).pop();
         if (!btn) break;
         click(btn);
         await settle();
@@ -1307,7 +1371,7 @@
       note = left;
     };
 
-    await waitFor(() => items().length, 8000, 'a list on this page');
+    await waitFor(() => all().length, 8000, 'a list on this page');
     // More entries: a "See more" in the pop-up, or the end of a list that loads as it scrolls.
     // Keeps going while the list grows, until `until()` is true or nothing more comes.
     const load = async (until) => {
@@ -1315,18 +1379,18 @@
       for (let i = 0, stale = 0; i < 120 && stale < 2; i++) {
         check();
         if (until() || !listShowing()) break;
-        const before = items().length;
-        const btns = searchText(scope(), [...t('seeMore'), ...t('seeAll')], 'exact');
+        const before = rows().length;
+        const btns = searchText(scope(), [...t('seeMore'), ...t('seeAll')], 'exact').filter(shown);
         if (btns.length) { btns.forEach(click); await settle(); }
-        const list = items();
+        const list = rows();
         if (list.length) { try { list[list.length - 1].scrollIntoView({ block: 'end' }); } catch (e) { /* ignore */ } await settle(); }
-        stale = items().length > before ? 0 : stale + 1;
+        stale = rows().length > before ? 0 : stale + 1;
         learn();
         ui.progress(`${names.size} entries found…`);
       }
       return until();
     };
-    const more = () => load(() => items().some((x) => !done.has(keyOf(x))));
+    const more = () => load(() => rows().some((x) => !done.has(keyOf(x))));
     // Count first: load the whole list, so the bar has its total and nothing is left unseen at the end.
     learn();
     await load(() => false);
@@ -1339,7 +1403,7 @@
         break;
       }
       learn();
-      const el = items().find((x) => !done.has(keyOf(x)));
+      const el = rows().find((x) => !done.has(keyOf(x)));
       if (!el) {
         if (await more()) continue;
         const missing = names.size - done.size;
@@ -1348,17 +1412,33 @@
       }
       const key = keyOf(el);
       const name = firstText(el);
-      let outcome, info = {}, error = '';
+      let outcome, info = {}, error = '', confirmed = true;
       if (already && already(el)) {
         count.same++;
         outcome = 'same';
       } else {
         try {
-          click(el.querySelector('a,[role="button"],[role="link"]') || el);
+          const target = el.querySelector('a,[role="button"],[role="link"]') || el;
+          let got = null;
+          click(target);
           await settle();
-          const r = await action();
+          if (ready) { // the entry counts as opened only once its own page is in front
+            got = await waitFor(ready, 5000).catch(() => null);
+            if (!got && listShowing()) { // the click did nothing: the whole sequence a mouse produces
+              press(target);
+              await settle();
+              got = await waitFor(ready, 5000).catch(() => null);
+            }
+            if (!got) throw new Error('its page did not open');
+          }
+          const r = await action(got, name);
           info = r.info || {};
-          if (r.status === 'changed') { count.changed++; outcome = 'changed'; await confirmIf(); } else { count.same++; outcome = 'same'; }
+          if (r.status === 'changed') {
+            await confirmIf();
+            confirmed = r.verify ? await r.verify() : true; // only what the page then shows counts
+            if (confirmed) count.changed++; else count.unsure++;
+            outcome = 'changed';
+          } else { count.same++; outcome = 'same'; }
           fails = 0;
         } catch (e) {
           if (e instanceof Abort) throw e;
@@ -1375,18 +1455,19 @@
       }
       done.add(key); // booked once, whatever happens next
       state[doneKey] = [...done];
-      each(name, outcome, done.size, Math.max(names.size, done.size), info, error);
+      each(name, outcome, done.size, Math.max(names.size, done.size), info, error, confirmed);
       await save();
     }
     const said = words || { dry: (c) => `${c.dry} would be changed`, done: (c) => `${c.changed} changed of ${done.size}` };
-    if (fails >= 3 && !(count.changed + count.dry + count.same)) {
+    if (fails >= 3 && !(count.changed + count.dry + count.same + count.unsure)) {
       const e = new Error('none of the entries in the list could be handled');
       e.seen = seen;
       throw e;
     }
-    const failed = (count.failed ? `, ${count.failed} could not be handled` : '') + note;
+    const failed = (count.unsure ? `, ${count.unsure} clicked but not shown as changed afterwards` : '') +
+      (count.failed ? `, ${count.failed} could not be handled` : '') + note;
     if (state.opts.dryRun) return { status: 'dry', detail: said.dry(count) + failed, seen };
-    return { status: count.changed ? 'changed' : 'already', detail: said.done(count) + failed, seen };
+    return { status: count.changed + count.unsure ? 'changed' : 'already', detail: said.done(count) + failed, seen };
   }
 
   // "Hide ads" for every advertiser Facebook lists.
@@ -1438,17 +1519,49 @@
     const listed = /advertis/i.test(location.pathname) ||
       findText(['advertisers you saw ads from', "advertisers you've seen", 'advertisers you have seen'], { mode: 'includes' }).length > 0;
     if (!listed) throw new Error('the advertisers list was not found');
+
+    // An advertiser's page has "Hide ads", or "Unhide" when its ads are hidden already. Only one
+    // that a person would see counts: pages opened earlier can still be in the document, covered.
+    const control = () => {
+      const root = topLayer() || document.body;
+      const hide = searchText(root, t('hideAds'), 'exact');
+      const unhide = searchText(root, t('unhide'), 'exact');
+      const front = (list) => list.filter(shown).pop();
+      let el = front(hide) || front(unhide);
+      if (!el) { // further down its page than the pop-up shows
+        for (const c of [...hide, ...unhide].reverse()) {
+          try { c.scrollIntoView({ block: 'center' }); } catch (e) { /* ignore */ }
+          if (shown(c)) { el = c; break; }
+        }
+      }
+      return el ? { el, hide: hide.includes(el) } : null;
+    };
+    // What the page in front says about the advertiser, read from the heading that carries its name.
+    // When no heading does, nothing is read: details of another advertiser would be worse than none.
+    const details = (ctl, name) => {
+      const root = topLayer() || document.body;
+      const want = norm(name);
+      const heads = [...root.querySelectorAll('h1,h2,[role="heading"]')].filter((h) => {
+        const text = norm(h.textContent);
+        return visible(h) && text.length > 1 && (text === want || text.startsWith(want) || want.startsWith(text));
+      });
+      const head = heads.filter(shown).pop() || heads.pop();
+      let box = head ? head.parentElement : null;
+      while (box && !box.contains(ctl)) box = box.parentElement;
+      return box ? advertiserInfo(box, head) : {};
+    };
+
     let last = Date.now();
     const same = (c) => (c.same ? `, ${c.same} already hidden` : '');
-    return drillList('seenDone', async () => {
-      // An advertiser's panel has "Hide ads", or "Unhide" when its ads are hidden already.
-      const btn = await waitFor(() => findText(t('hideAds'))[0] || findText(t('unhide'))[0], 5000, '“Hide ads”');
-      const info = advertiserInfo(topLayer() || document.body);
-      if (!hit(ownText(btn), t('hideAds'), 'exact')) return { status: 'already', info };
-      try { act(btn, `hide ads from ${info.name || 'this advertiser'}`); } catch (e) { e.info = info; throw e; }
+    return drillList('seenDone', async (ctl, name) => {
+      const info = details(ctl.el, name);
+      if (!ctl.hide) return { status: 'already', info };
+      try { act(ctl.el, `hide ads from ${name}`); } catch (e) { e.info = info; throw e; }
       await settle();
-      return { status: 'changed', info };
+      const verify = async () => !!(await waitFor(() => { const c = control(); return c && !c.hide; }, 4000).catch(() => null));
+      return { status: 'changed', info, verify };
     }, {
+      ready: control,
       ignore: ['all advertisers', 'all accounts'], // the filters above the list
       // The list already says which advertisers are hidden. They are only opened when their details are wanted.
       // With details wanted, a hidden advertiser is still opened once; after that its details come from the database.
@@ -1458,18 +1571,19 @@
         dry: (c) => `${c.dry} advertisers would be hidden${same(c)}`,
         done: (c) => `${c.changed} advertisers hidden${same(c)}`,
       },
-      each: (name, outcome, did, total, info, error) => {
+      each: (name, outcome, did, total, info, error, confirmed) => {
         prog.done = did;
         prog.total = Math.max(prog.total, total);
         ui.advertisers(prog);
         if (name) {
           const key = 'seen:' + norm(name);
           const was = book.get(key) || {}; // what an earlier run read, when this one did not open the advertiser
-          const got = info && info.name ? info : was;
-          const rec = record({ task: 'seen', name: (info && info.name) || name, category: got.category, about: got.about,
-            followers: got.followers, website: got.website, error, action: outcome === 'changed' ? 'clicked “Hide ads”' : 'none',
-            result: { changed: 'ads hidden', dry: 'would be hidden (dry run)', same: 'already hidden', failed: 'failed' }[outcome] },
-          key, outcome === 'changed' || outcome === 'same');
+          const got = info && (info.category || info.about || info.followers || info.website) ? info : was;
+          const result = outcome === 'changed' && !confirmed ? '“Hide ads” clicked, not shown as hidden afterwards'
+            : { changed: 'ads hidden', dry: 'would be hidden (dry run)', same: 'already hidden', failed: 'failed' }[outcome];
+          const rec = record({ task: 'seen', name, category: got.category, about: got.about,
+            followers: got.followers, website: got.website, error, action: outcome === 'changed' ? 'clicked “Hide ads”' : 'none', result },
+          key, confirmed && (outcome === 'changed' || outcome === 'same'));
           log(advLine(rec, did, prog.total));
           tick('seen', last);
         }
@@ -1710,6 +1824,10 @@
     stopRequested = false;
     book = bookFrom(await memory.load());
     bookDirty = false;
+    if (memory.dropped) { // say so once, and store the database without them
+      log(`  ${memory.dropped} entries of the advertiser database were filed under the wrong name by an earlier version: removed, those advertisers are read again`);
+      bookDirty = true;
+    }
     units = buildUnits(state.opts);
     ui.showRun();
     try {
