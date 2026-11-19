@@ -3,6 +3,20 @@
 Notable changes to this project. Versions follow [semantic versioning](https://semver.org/).
 Each release on GitHub carries the section for its version.
 
+## [1.6.3]
+
+On the `dev` branch, not released yet. From a live run of 1.6.2, which skipped all 240 remembered list-based advertisers and handled the 200 advertisers of "Hide advertisers you have seen" in just over a minute.
+
+### Fixed
+
+- **A setting reported as "Changed" on every run.** "Social interactions in ads" was changed to "Only me" by every run, 1.6.2 included. Three things now work on it:
+  - A pop-up that opens with no option selected yet gets a moment to show its current choice before anything is clicked.
+  - A step that the last run changed to the very same value says so in the report and asks for a check by hand: the choice may not be staying, or the page does not show it.
+  - When a choice is changed, the log keeps what the pop-up showed before the click, with each option named and its state.
+- **The line that names a step was missing from the log** for every step that starts with a page load ("1/26 Disable list-based advertisers", "10/26 Who can see your future posts"…). It is now written once per step, before the page loads.
+- "Limit who can see past posts" says that it is applied on every run: Facebook offers the button whether or not past posts were limited before.
+- A description stored as a follower count or as a category by earlier versions is moved to the description when the database is read.
+
 ## [1.6.2] - 2026-11-19
 
 Small corrections from a live run of 1.6.1, which completed every step: 240 of 240 list-based advertisers (16 switched to "Don't allow") and 200 advertisers in "Hide advertisers you have seen" (29 hidden), each handled once.
@@ -94,6 +108,7 @@ Development versions, not published.
 - **1.1.0** - Remembered advertisers, log saving, progress bars with time left, advertiser details as CSV.
 - **1.0.0** - First version: the menu, the advertiser and ad-data tasks, the three privacy levels, dry run and the report.
 
+[1.6.3]: https://github.com/privaterra/fb-ad-disable/compare/v1.6.2...dev
 [1.6.2]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.6.2
 [1.6.1]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.6.1
 [1.6.0]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.6.0

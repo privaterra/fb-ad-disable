@@ -291,8 +291,18 @@ const pages = {
         // plainOptions: the choices are plain rows that show no state, so nothing says which one is selected.
         m.dialog('Social interactions', 'Back', window.__flags.plainOptions
           ? m.el('div', null, ['Friends', 'Only me'].map((o) => m.el('div', { role: 'button', tabindex: '0', onclick: () => m.rec('set', { id: 'ad_social', value: o }) }, m.span(o))))
-          : m.radios(['Friends', 'Only me'], 'Friends', (o) => m.rec('set', { id: 'ad_social', value: o })));
+          : window.__flags.slowState ? slowRadios() : m.radios(['Friends', 'Only me'], 'Friends', (o) => m.rec('set', { id: 'ad_social', value: o })));
       }));
+    // slowState: the choice is kept, but the pop-up opens with nothing selected and only shows the
+    // kept choice a moment later, as a pop-up does that fetches its state after opening.
+    function slowRadios() {
+      const group = m.radios(['Friends', 'Only me'], '', (o) => { sessionStorage.setItem('mock:social', o); m.rec('set', { id: 'ad_social', value: o }); });
+      setTimeout(() => {
+        const kept = sessionStorage.getItem('mock:social') || 'Friends';
+        for (const r of group.querySelectorAll('[role="radio"]')) r.setAttribute('aria-checked', String(r.textContent.startsWith(kept)));
+      }, 600);
+      return group;
+    }
     const topic = (name) => m.el('div', { role: 'button', onclick: () => {
       m.dialog(name, 'Back', m.radios(['No preference', 'See less'], 'No preference', (o) => m.rec('topic', { name, value: o })));
     } }, m.span(name));

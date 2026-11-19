@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FB Ad Disable & Privacy Hardener
 // @namespace    https://github.com/privaterra/fb-ad-disable
-// @version      1.6.2
+// @version      1.6.3
 // @description  Opt out of advertiser lists, restrict ad data use and tighten Facebook privacy settings from one menu.
 // @license      MIT
 // @homepageURL  https://github.com/privaterra/fb-ad-disable
@@ -32,7 +32,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.6.2';
+  const VERSION = '1.6.3';
   const TAG = '[fb-ad-disable]';
   const KEY = 'fbAdDisableState';
   const MEMORY_KEY = 'fbAdDisableAdvertisers';
@@ -242,6 +242,9 @@
     },
   };
 
+  // "3,231,099 followers", "1.2M likes": a count and the word, nothing else.
+  const FOLLOWERS = /^[\d.,\s]*\d[\d.,]*\s?[kmb]?\+?\s+(followers?|likes?|members?)$/i;
+
   // A list-based advertiser is known by the address of its page, without the query string: the
   // number in the address is the advertiser, the rest says how the page is to be shown.
   const listKey = (key) => String(key).split(/[?#]/)[0].replace(/\/+$/, '') + '/';
@@ -263,6 +266,16 @@
       // Up to 1.6.1 a list-based advertiser's key included the query string of its link.
       const out = new Map();
       for (const [key, e] of kept) {
+        // Up to 1.6.1 a description could be stored as the follower count or as the category.
+        if (e && typeof e === 'object') {
+          const stray = [typeof e.followers === 'string' && e.followers && !FOLLOWERS.test(e.followers) ? e.followers : '',
+            typeof e.category === 'string' && e.category.length > 70 ? e.category : ''].filter(Boolean);
+          if (stray.length) {
+            if (stray.includes(e.followers)) e.followers = '';
+            if (stray.includes(e.category)) e.category = '';
+            e.about = [...stray, typeof e.about === 'string' ? e.about : ''].filter(Boolean).join(' / ').slice(0, 300);
+          }
+        }
         const k = key.startsWith('/') ? listKey(key) : key;
         const had = out.get(k);
         if (!had || ((e && e.at) || 0) >= ((had && had.at) || 0)) out.set(k, e);
@@ -336,6 +349,7 @@
   //
   // While the script runs it is a Map, not a plain object: keys come from the page, a saved run or a
   // backup file, and a Map takes any key (even "__proto__") as plain data.
+  let lastUnits = new Map(); // what the last finished or stopped run reported for each step
   let book = new Map();
   const bookFrom = (entries) => new Map(Object.entries(entries));
   let bookDirty = false;
@@ -607,15 +621,27 @@
   // With `off` or `unread`, `shown` is what the pop-up looked like, for the log.
   async function choose(needles, mode = 'exact', timeout = 8000) {
     const find = () => findOption(needles, mode)[0];
-    const el = await waitFor(find, timeout, `option “${needles[0]}”`);
+    let el = await waitFor(find, timeout, `option “${needles[0]}”`);
     const name = say(el);
-    if (checkedState(el) === true) return { status: 'already', detail: name };
+    const selected = () => { const o = find(); return !!o && checkedState(o) === true; };
+    // A pop-up can open before it knows the current choice, with nothing selected yet. Clicking
+    // then reports a change on every run. So while no option at all shows as selected, the pop-up
+    // gets a moment to show which one is.
+    const anySelected = () => {
+      const o = find();
+      const group = (o && o.closest('[role="radiogroup"],[role="menu"],[role="listbox"],[role="dialog"]')) || topLayer() || document.body;
+      return group.querySelector('[aria-checked="true"],[aria-selected="true"],input:checked') !== null;
+    };
+    if (!selected() && !anySelected()) await waitFor(anySelected, 2500, 'the current choice', 250).catch(() => null);
+    if (selected()) return { status: 'already', detail: name };
+    el = find() || el;
+    const was = snapshot(); // what the pop-up showed before the change, for the log
     act(el, `select “${name}”`);
     await settle();
     const now = find();
     const picked = now ? checkedState(now) : null;
-    if (picked === true || !now) return { status: 'changed', detail: name };
-    return { status: 'changed', detail: name, [picked === false ? 'off' : 'unread']: true, shown: snapshot() };
+    if (picked === true || !now) return { status: 'changed', detail: name, was };
+    return { status: 'changed', detail: name, was, [picked === false ? 'off' : 'unread']: true, shown: snapshot() };
   }
 
   async function confirmIf(needles = t('confirm')) {
@@ -801,7 +827,7 @@
     }
     // "3,231,099 followers", "1.2M likes": a count and the word, nothing else. A description that
     // happens to hold a number and "like" or "members" is not a follower count.
-    const followers = lines.find((x) => /^[\d.,\s]*\d[\d.,]*\s?[kmb]?\+?\s+(followers?|likes?|members?)$/i.test(x)) || '';
+    const followers = lines.find((x) => FOLLOWERS.test(x)) || '';
     const website = lines.find((x) => /^(https?:\/\/|www\.)\S+$/i.test(x)) || '';
     const label = /^(facebook page|instagram( account| profile)?|website|page|profile|learn more)$/i;
     const rest = lines.filter((x) => x !== followers && x !== website && !label.test(x));
@@ -984,6 +1010,7 @@
       r = await setSwitch(only[0], s.elseToggle);
     }
     if (r.status === 'changed') await confirmIf(s.confirm);
+    if (r.was) log(`  before the change the pop-up showed: ${r.was}`);
     if (r.off) { // clicked, and the page still said "not selected": not something to report as done
       const e = new Error(`“${r.detail}” was clicked, but the page still showed it as not selected`);
       e.seen = r.shown;
@@ -993,7 +1020,7 @@
       // Without a state to read, every run clicks the option and reports a change. Say so, and keep
       // what the pop-up looked like in the log: it is what is needed to teach the script to read it.
       log(`  the page does not show which option is selected; the pop-up showed: ${r.shown}`);
-      return { status: 'changed', detail: `${r.detail} (selected; the page does not show whether it was selected before, so this is reported as a change on every run)` };
+      return { status: 'changed', detail: `${r.detail} (selected; the page does not show whether it was selected before, so this is reported as a change on every run)`, again: true };
     }
     return r;
   }
@@ -1018,7 +1045,9 @@
       .map((el) => `button “${clip(el.getAttribute('aria-label'), 30)}”`);
     const controls = [...root.querySelectorAll('[role="radio"],[role="menuitemradio"],[role="switch"],[role="checkbox"],input[type="checkbox"],input[type="radio"]')]
       .filter(visible).slice(0, 15)
-      .map((el) => `${el.getAttribute('role') || el.type} ${(el.matches('input') ? el.checked : el.getAttribute('aria-checked') === 'true') ? 'on' : 'off'} “${clip(switchLabel(el), 40)}”`);
+      // An option that carries its own text is named by it; a bare switch by the label next to it.
+      .map((el) => `${el.getAttribute('role') || el.type} ${(el.matches('input') ? el.checked : el.getAttribute('aria-checked') === 'true') ? 'on' : 'off'} “${
+        clip(el.getAttribute('aria-label') || (/^(radio|menuitemradio|option)$/.test(el.getAttribute('role') || '') && el.textContent) || switchLabel(el), 40)}”`);
     return `${layer ? 'pop-up on' : 'page'} ${location.pathname}${location.search} | text: ${texts.join(' · ')} | controls: ${[...controls, ...named].join(', ') || 'none'}`
       .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, '[email]').replace(/\+?\d[\d\s().-]{6,}\d/g, '[number]').slice(0, 2500);
   }
@@ -1037,7 +1066,8 @@
       await settle();
     }
     if (!n) throw new Error('the “Limit past posts” button was not found');
-    return { status: 'changed', detail: 'past posts limited to Friends' };
+    // Facebook offers this button whether or not past posts were limited before.
+    return { status: 'changed', detail: 'past posts limited to Friends (Facebook does not show whether they already were, so this is applied on every run)', again: true };
   }
 
   // Advertisers that uploaded a list with your details. For each one: open it, open
@@ -1873,6 +1903,7 @@
     stopRequested = false;
     book = bookFrom(await memory.load());
     bookDirty = false;
+    lastUnits = new Map(Object.entries((cleanHistory(await durable.get(HISTORY_KEY)) || {}).units || {}));
     if (memory.dropped) { // say so once, and store the database without them
       log(`  ${memory.dropped} entries of the advertiser database were filed under the wrong name by an earlier version: removed, those advertisers are read again`);
       bookDirty = true;
@@ -1888,13 +1919,17 @@
         eta();
         let res;
         fresh = [];
-        if (unit.byHand) {
+        // The step's line in the log: once, and before the step loads its page. Written after the
+        // page load it was lost for every step that starts with one.
+        if (state.headed !== state.idx) {
+          state.headed = state.idx;
           log(`${state.idx + 1}/${units.length} ${unit.title}`);
+        }
+        if (unit.byHand) {
           res = { status: 'manual', detail: 'can only be done by hand' };
         } else {
           try {
             await goto(unit);
-            if (!arriving) log(`${state.idx + 1}/${units.length} ${unit.title}`);
             res = await unit.run();
           } catch (e) {
             if (e instanceof Abort) throw e;
@@ -1921,6 +1956,15 @@
             else res = { status: 'manual', detail: e.message, seen };
           }
         }
+        // A setting that the last run changed to the very same value has not stayed changed, or the
+        // page gives the script no way to tell. Either way it is worth a look by hand.
+        const plain = clip(res.detail, 200);
+        const prev = lastUnits.get(unit.id);
+        if (res.status === 'changed' && !state.opts.dryRun && !res.again && !unit.advertisers &&
+            prev && prev.status === 'changed' && prev.detail === plain) {
+          res.detail = `${res.detail}. The last run reported this same change: the choice may not be staying, or the page does not show it. Check it by hand`;
+          res.repeat = true;
+        }
         log(`  ${STATUS[res.status].text}${res.detail ? ': ' + res.detail : ''}`);
         if (res.seen) log(`  the page showed: ${res.seen}`);
         // Facebook's "try again later" pages, wherever they turned up in this step.
@@ -1932,7 +1976,7 @@
         }
         ui.advertisers(null);
         state.results.push({ id: unit.id, task: unit.task, title: unit.title, url: unit.url, manual: unit.manual, status: res.status,
-          detail: res.detail || '', seen: res.seen || '', limited: !!res.limited });
+          detail: res.detail || '', plain, seen: res.seen || '', limited: !!res.limited });
         state.idx++;
         state.navFor = null;
         await save();
@@ -1974,6 +2018,11 @@
         note: rs.length === 1 ? `${STATUS[rs[0].status].text}${rs[0].detail ? ': ' + clip(rs[0].detail, 140) : ''}`
           : WORDS.filter(([st]) => n(st)).map(([st, word]) => `${n(st)} ${word}`).join(', '),
       };
+    }
+    if (!state.opts.dryRun) { // what each step reported, for the next run to compare with
+      const units = new Map(Object.entries((cleanHistory(hist) || {}).units || {}));
+      for (const r of state.results) units.set(r.id, { at: now, status: r.status, detail: clip(r.plain == null ? r.detail : r.plain, 200) });
+      hist.units = Object.fromEntries(units);
     }
     hist.last = { at: now, dryRun: !!state.opts.dryRun, finished: !!state.finished, version: VERSION };
     await durable.set(HISTORY_KEY, hist);
@@ -2106,7 +2155,15 @@
     const l = input.last;
     const last = l && typeof l === 'object' && past(l.at)
       ? { at: past(l.at), dryRun: !!l.dryRun, finished: !!l.finished, version: short(l.version, 20) } : null;
-    return last || Object.keys(tasks).length ? { last, tasks } : null;
+    // What each step reported: { id: { at, status, detail } }, for ids shaped like this script's.
+    const units = [];
+    const given2 = input.units && typeof input.units === 'object' && !Array.isArray(input.units) ? input.units : {};
+    for (const [id, e] of Object.entries(given2)) {
+      if (units.length >= 200) break;
+      if (!/^[a-z][a-z0-9_]{0,40}$/.test(id) || !e || typeof e !== 'object' || !past(e.at) || !['changed', 'already', 'dry', 'manual', 'info'].includes(e.status)) continue;
+      units.push([id, { at: past(e.at), status: e.status, detail: short(e.detail, 200) }]);
+    }
+    return last || Object.keys(tasks).length ? { last, tasks, units: Object.fromEntries(units) } : null;
   }
 
   async function exportData() {
@@ -2142,8 +2199,11 @@
 
     const history = cleanHistory(data.history);
     if (history) {
-      const cur = cleanHistory(await durable.get(HISTORY_KEY)) || { last: null, tasks: {} };
+      const cur = cleanHistory(await durable.get(HISTORY_KEY)) || { last: null, tasks: {}, units: {} };
       for (const [id, e] of Object.entries(history.tasks)) if (!cur.tasks[id] || e.at > cur.tasks[id].at) cur.tasks[id] = e;
+      const units = new Map(Object.entries(cur.units || {}));
+      for (const [id, e] of Object.entries(history.units || {})) if (!units.has(id) || e.at > units.get(id).at) units.set(id, e);
+      cur.units = Object.fromEntries(units);
       if (history.last && (!cur.last || history.last.at > cur.last.at)) cur.last = history.last;
       await durable.set(HISTORY_KEY, cur);
     }
