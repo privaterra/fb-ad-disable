@@ -288,7 +288,10 @@ const pages = {
       }),
       m.el('h3', null, m.span('Other settings')),
       setting('Social interactions', 'Choose who can see your social interactions alongside ads.', null, '', () => {
-        m.dialog('Social interactions', 'Back', m.radios(['Friends', 'Only me'], 'Friends', (o) => m.rec('set', { id: 'ad_social', value: o })));
+        // plainOptions: the choices are plain rows that show no state, so nothing says which one is selected.
+        m.dialog('Social interactions', 'Back', window.__flags.plainOptions
+          ? m.el('div', null, ['Friends', 'Only me'].map((o) => m.el('div', { role: 'button', tabindex: '0', onclick: () => m.rec('set', { id: 'ad_social', value: o }) }, m.span(o))))
+          : m.radios(['Friends', 'Only me'], 'Friends', (o) => m.rec('set', { id: 'ad_social', value: o })));
       }));
     const topic = (name) => m.el('div', { role: 'button', onclick: () => {
       m.dialog(name, 'Back', m.radios(['No preference', 'See less'], 'No preference', (o) => m.rec('topic', { name, value: o })));

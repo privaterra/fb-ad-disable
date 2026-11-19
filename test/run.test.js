@@ -16,7 +16,7 @@ const LIB = fs.readFileSync(path.join(__dirname, 'mock', 'lib.js'), 'utf8');
 
 // Serves the mock pages on the real Facebook hostnames. `inject` adds the script
 // to every page, the way a userscript manager would.
-async function mockFacebook(context, { inject = false, offMeta = false, listMode = 'ui', listCut = 0 } = {}) {
+async function mockFacebook(context, { inject = false, offMeta = false, listMode = 'ui', listCut = 0, plainOptions = false } = {}) {
   const events = [];
   await context.exposeFunction('__record', (json) => { events.push(JSON.parse(json)); });
   await context.route('**/*', (route) => route.abort()); // never touch the real internet
@@ -35,7 +35,7 @@ async function mockFacebook(context, { inject = false, offMeta = false, listMode
     return route.fulfill({
       contentType: 'text/html; charset=utf-8',
       body: `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>mock</title></head><body><div id="main"></div>
-        <script>window.__flags = ${JSON.stringify({ offMeta, listMode, listCut })}</script>
+        <script>window.__flags = ${JSON.stringify({ offMeta, listMode, listCut, plainOptions })}</script>
         <script src="/__mock.js"></script><script>(${page ? page.toString() : '() => {}'})()</script>
         ${inject ? '<script src="/__fbad.js"></script>' : ''}</body></html>`,
     });
@@ -568,6 +568,61 @@ test('hide advertisers: an advertiser\'s own page is never taken for the list, a
   await context.close();
 });
 
+// ---- what the live run of 1.6.1 showed --------------------------------------------------------
+
+test('a choice whose pop-up shows no state is reported as such, with what the pop-up looked like', async () => {
+  const context = await browser.newContext();
+  // "Social interactions in ads" said "Changed (Only me)" on every live run.
+  const events = await mockFacebook(context, { inject: true, plainOptions: true });
+  await fakeUserscriptApi(context);
+  const page = await context.newPage();
+  await page.goto('https://www.facebook.com/settings/');
+  await page.evaluate(() => window.__openMenu());
+  await configureAndStart(page, { tasks: ['adsettings'], options: { saveLog: true } });
+  const r = await report(page);
+  assert.equal(sets(events).ad_social, 'Only me');
+  assert.equal(r.ad_social.status, 'changed');
+  assert.match(r.ad_social.text, /Only me \(selected; the page does not show whether it was selected before, so this is reported as a change on every run\)/);
+  const log = (await saved(page, 'savelog')).text;
+  assert.match(log, /the page does not show which option is selected; the pop-up showed: pop-up on .*Social interactions.*Friends‹button› · Only me‹button›/);
+  assert.deepEqual(events.filter((e) => e.type === 'decoy'), []);
+  await context.close();
+});
+
+test('advertiser details: a description is not taken for a follower count or a category; list keys ignore the query string', async () => {
+  const context = await browser.newContext();
+  await mockFacebook(context, { inject: true });
+  const values = await fakeUserscriptApi(context);
+  // A list-based advertiser remembered by 1.6.1 and earlier, under a key that includes the query string.
+  values.set('fbAdDisableAdvertisers', JSON.stringify({
+    '/ads/audience_based_advertising/1000002/?should_show_back_button=true&from=elsewhere': { task: 'list-based', name: 'Already Done Inc', result: 'no change needed', at: 5, confirmed: true },
+  }));
+  const page = await context.newPage();
+  await page.goto('https://www.facebook.com/settings/');
+  await page.evaluate(() => window.__openMenu());
+  const info = await page.evaluate(() => {
+    const box = document.createElement('div');
+    box.innerHTML = '<h2>Deals Site</h2><div>Deals Site is the biggest and best shopping site built for people like you, with 7 million+ members. Discounts and more</div>' +
+      '<div>Facebook Page</div><div>1,234 followers</div><div>Website</div><div>https://deals.example/</div>';
+    document.body.append(box);
+    const out = window.__fbAdDisable._info(box);
+    box.remove();
+    return out;
+  });
+  assert.equal(info.followers, '1,234 followers');
+  assert.equal(info.category, '', 'a long description is not a category');
+  assert.match(info.about, /^Deals Site is the biggest/);
+  assert.equal(info.website, 'https://deals.example/');
+
+  await configureAndStart(page, { tasks: ['lists'], options: { saveLog: true } });
+  const r = await report(page);
+  assert.match(r.lists.text, /1 skipped as remembered/);
+  const kept = JSON.parse(values.get('fbAdDisableAdvertisers'));
+  assert.ok(Object.keys(kept).every((k) => /^\/ads\/audience_based_advertising\/\d+\/$/.test(k)), 'every key is the address without its query string');
+  assert.equal(Object.keys(kept).length, 6);
+  await context.close();
+});
+
 // ---- export and import (issue 9) ------------------------------------------------------------
 
 test('data is saved to a file at the end of a run and imported in another browser', async () => {
@@ -593,9 +648,9 @@ test('data is saved to a file at the end of a run and imported in another browse
   const keys = Object.keys(data.advertisers);
   assert.equal(keys.filter((k) => k.startsWith('/ads/audience_based_advertising/')).length, 6);
   assert.equal(keys.filter((k) => k.startsWith('seen:')).length, 5);
-  const broker = data.advertisers['/ads/audience_based_advertising/1000001/?should_show_back_button=true'];
+  const broker = data.advertisers['/ads/audience_based_advertising/1000001/'];
   assert.deepEqual([broker.task, broker.name, broker.result, broker.confirmed], ['list-based', 'Data Broker One', 'disabled', true]);
-  assert.equal(data.advertisers['/ads/audience_based_advertising/1000005/?should_show_back_button=true'].confirmed, false, 'no list controls: not done');
+  assert.equal(data.advertisers['/ads/audience_based_advertising/1000005/'].confirmed, false, 'no list controls: not done');
   assert.deepEqual([data.advertisers['seen:acme'].category, data.advertisers['seen:acme'].followers, data.advertisers['seen:acme'].result],
     ['Retail company', '1,234 followers', 'ads hidden']);
   assert.match(data.history.tasks.lists.note, /3 disabled/);
