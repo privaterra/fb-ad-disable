@@ -3,6 +3,20 @@
 Notable changes to this project. Versions follow [semantic versioning](https://semver.org/).
 Each release on GitHub carries the section for its version.
 
+## [1.6.4]
+
+On the `dev` branch, not released yet. From a live run of 1.6.3, whose log showed why one setting was reported as changed on every run.
+
+### Fixed
+
+- **"Social interactions in ads" was never really changed: the script clicked the value shown on an account.** The setting is kept per account. Its pop-up, "Select an account", lists each account with its product and current value, and the "Only me" there is what the Facebook account is already set to, not an option. The script took it for the option, clicked it (which only opens the account) and reported a change. It now reads the list: a Facebook account that already shows the wanted value is left alone, one that does not is opened and set, and the report says what each account shows.
+- **Accounts of other products in that list (Instagram) are read and reported, not changed.** This script is about Facebook.
+- Several categories on one line ("Brand · Science, Technology & Engineering · Information Technology Company") are a category again. 1.6.3 took a long one for a description and dropped it from the log line.
+
+### Changed
+
+- The README says that a saved log can contain your name and the names of your accounts, when the text of a pop-up is kept in it.
+
 ## [1.6.3] - 2026-11-19
 
 From a live run of 1.6.2, which skipped all 240 remembered list-based advertisers and handled the 200 advertisers of "Hide advertisers you have seen" in just over a minute.
@@ -108,6 +122,7 @@ Development versions, not published.
 - **1.1.0** - Remembered advertisers, log saving, progress bars with time left, advertiser details as CSV.
 - **1.0.0** - First version: the menu, the advertiser and ad-data tasks, the three privacy levels, dry run and the report.
 
+[1.6.4]: https://github.com/privaterra/fb-ad-disable/compare/v1.6.3...dev
 [1.6.3]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.6.3
 [1.6.2]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.6.2
 [1.6.1]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.6.1

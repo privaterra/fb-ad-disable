@@ -16,7 +16,7 @@ const LIB = fs.readFileSync(path.join(__dirname, 'mock', 'lib.js'), 'utf8');
 
 // Serves the mock pages on the real Facebook hostnames. `inject` adds the script
 // to every page, the way a userscript manager would.
-async function mockFacebook(context, { inject = false, offMeta = false, listMode = 'ui', listCut = 0, plainOptions = false, slowState = false } = {}) {
+async function mockFacebook(context, { inject = false, offMeta = false, listMode = 'ui', listCut = 0, plainOptions = false, slowState = false, forgetful = false } = {}) {
   const events = [];
   await context.exposeFunction('__record', (json) => { events.push(JSON.parse(json)); });
   await context.route('**/*', (route) => route.abort()); // never touch the real internet
@@ -35,7 +35,7 @@ async function mockFacebook(context, { inject = false, offMeta = false, listMode
     return route.fulfill({
       contentType: 'text/html; charset=utf-8',
       body: `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>mock</title></head><body><div id="main"></div>
-        <script>window.__flags = ${JSON.stringify({ offMeta, listMode, listCut, plainOptions, slowState })}</script>
+        <script>window.__flags = ${JSON.stringify({ offMeta, listMode, listCut, plainOptions, slowState, forgetful })}</script>
         <script src="/__mock.js"></script><script>(${page ? page.toString() : '() => {}'})()</script>
         ${inject ? '<script src="/__fbad.js"></script>' : ''}</body></html>`,
     });
@@ -659,19 +659,47 @@ test('a pop-up that shows its current choice a moment after opening is not chang
 
 test('a setting that the last run changed to the same value is pointed out', async () => {
   const context = await browser.newContext();
-  // The mock's "Social interactions" does not keep the choice: it opens on "Friends" every time.
-  await mockFacebook(context, { inject: true });
+  // "Social interactions" does not keep the choice here: its list shows "Friends" again afterwards.
+  await mockFacebook(context, { inject: true, forgetful: true });
   await fakeUserscriptApi(context);
   const page = await context.newPage();
   await page.goto('https://www.facebook.com/settings/');
   await page.evaluate(() => window.__openMenu());
   await configureAndStart(page, { tasks: ['adsettings'] });
   let r = await report(page);
-  assert.match(r.ad_social.text, /Changed: Only me$/);
+  assert.match(r.ad_social.text, /Changed: Facebook: Only me · Instagram shows “Friends” \(not a Facebook account: left as it is\)$/);
   await again(page);
   r = await report(page);
   assert.equal(r.ad_social.status, 'changed');
-  assert.match(r.ad_social.text, /Only me\. The last run reported this same change: the choice may not be staying, or the page does not show it\. Check it by hand$/);
+  assert.match(r.ad_social.text, /left as it is\)\. The last run reported this same change: the choice may not be staying, or the page does not show it\. Check it by hand$/);
+  await context.close();
+});
+
+// ---- what the live run of 1.6.3 showed --------------------------------------------------------
+
+test('a setting kept per account: the value shown on an account is not an option, and other products are left alone', async () => {
+  const context = await browser.newContext();
+  const events = await mockFacebook(context, { inject: true });
+  await fakeUserscriptApi(context);
+  const page = await context.newPage();
+  await page.goto('https://www.facebook.com/settings/');
+  await page.evaluate(() => window.__openMenu());
+  await configureAndStart(page, { tasks: ['adsettings'] });
+  let r = await report(page);
+  // Run 1: the Facebook account is opened and set; the Instagram account is only read.
+  assert.equal(r.ad_social.status, 'changed');
+  assert.match(r.ad_social.text, /Changed: Facebook: Only me · Instagram shows “Friends” \(not a Facebook account: left as it is\)$/);
+  assert.deepEqual(events.filter((e) => e.type === 'opened').map((e) => e.product), ['Facebook']);
+  assert.deepEqual(events.filter((e) => e.type === 'set' && e.id.startsWith('ad_social')).map((e) => `${e.id}=${e.value}`), ['ad_social=Only me']);
+
+  // Run 2: the list now shows "Only me" on the Facebook account. Up to 1.6.3 that text was taken
+  // for the option, clicked, and reported as a change on every run.
+  await again(page);
+  r = await report(page);
+  assert.equal(r.ad_social.status, 'already');
+  assert.match(r.ad_social.text, /Already set: Facebook: Only me · Instagram shows “Friends” \(not a Facebook account: left as it is\)$/);
+  assert.equal(events.filter((e) => e.type === 'opened').length, 1, 'no account is opened when nothing is to change');
+  assert.equal(events.filter((e) => e.type === 'set' && e.id.startsWith('ad_social')).length, 1);
   await context.close();
 });
 

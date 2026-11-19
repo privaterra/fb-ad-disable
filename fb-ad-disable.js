@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FB Ad Disable & Privacy Hardener
 // @namespace    https://github.com/privaterra/fb-ad-disable
-// @version      1.6.3
+// @version      1.6.4
 // @description  Opt out of advertiser lists, restrict ad data use and tighten Facebook privacy settings from one menu.
 // @license      MIT
 // @homepageURL  https://github.com/privaterra/fb-ad-disable
@@ -32,7 +32,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.6.3';
+  const VERSION = '1.6.4';
   const TAG = '[fb-ad-disable]';
   const KEY = 'fbAdDisableState';
   const MEMORY_KEY = 'fbAdDisableAdvertisers';
@@ -72,6 +72,7 @@
     unavailable: { en: ["this page isn't available right now", "this content isn't available right now", 'something went wrong'] },
     unhide: { en: ['unhide', 'unhide ads', 'show ads'] },
     hidden: { en: ['you hid their ads', 'you chose to hide all ads'] },
+    selectAccount: { en: ['select an account', 'choose an account', 'select account'] },
     on: { en: ['on', 'yes', 'enabled'] },
     off: { en: ['off', 'no', 'disabled'] },
   };
@@ -243,6 +244,9 @@
   };
 
   // "3,231,099 followers", "1.2M likes": a count and the word, nothing else.
+  // A category is a short name, or a few of them: "Retail company", "Brand · Science, Technology &
+  // Engineering · Information Technology Company". A description is a sentence.
+  const isCategory = (x) => x.length <= 200 && x.split(' · ').every((part) => part.length <= 50);
   const FOLLOWERS = /^[\d.,\s]*\d[\d.,]*\s?[kmb]?\+?\s+(followers?|likes?|members?)$/i;
 
   // A list-based advertiser is known by the address of its page, without the query string: the
@@ -269,11 +273,16 @@
         // Up to 1.6.1 a description could be stored as the follower count or as the category.
         if (e && typeof e === 'object') {
           const stray = [typeof e.followers === 'string' && e.followers && !FOLLOWERS.test(e.followers) ? e.followers : '',
-            typeof e.category === 'string' && e.category.length > 70 ? e.category : ''].filter(Boolean);
+            typeof e.category === 'string' && e.category && !isCategory(e.category) ? e.category : ''].filter(Boolean);
           if (stray.length) {
             if (stray.includes(e.followers)) e.followers = '';
             if (stray.includes(e.category)) e.category = '';
             e.about = [...stray, typeof e.about === 'string' ? e.about : ''].filter(Boolean).join(' / ').slice(0, 300);
+          }
+          // 1.6.3 took several categories on one line for a description: put them back.
+          if (!e.category && typeof e.about === 'string' && e.about.includes(' · ')) {
+            const [first, ...others] = e.about.split(' / ');
+            if (isCategory(first)) { e.category = first; e.about = others.join(' / '); }
           }
         }
         const k = key.startsWith('/') ? listKey(key) : key;
@@ -831,8 +840,8 @@
     const website = lines.find((x) => /^(https?:\/\/|www\.)\S+$/i.test(x)) || '';
     const label = /^(facebook page|instagram( account| profile)?|website|page|profile|learn more)$/i;
     const rest = lines.filter((x) => x !== followers && x !== website && !label.test(x));
-    // A category is short ("Retail company"). An advertiser without one starts with its description.
-    const category = rest[0] && rest[0].length <= 70 ? rest[0] : '';
+    // An advertiser without a category starts with its description.
+    const category = rest[0] && isCategory(rest[0]) ? rest[0] : '';
     return { name, category, about: rest.filter((x) => x !== category).slice(0, 2).join(' / '), followers, website };
   }
 
@@ -1000,6 +1009,7 @@
       if (!opened) throw new Error('the setting did not open');
       return allSwitchesOff();
     }
+    if (accountRows().length) return perAccount(s, value); // one value per account, not one for all
     let r;
     try {
       r = await choose(value, s.mode);
@@ -1009,6 +1019,11 @@
       if (e instanceof DryRun || e instanceof Abort || s.elseToggle === undefined || only.length !== 1) throw e;
       r = await setSwitch(only[0], s.elseToggle);
     }
+    return settled(r, s);
+  }
+
+  // After choose(): confirm, keep what the pop-up showed, and say what the page gave back.
+  async function settled(r, s) {
     if (r.status === 'changed') await confirmIf(s.confirm);
     if (r.was) log(`  before the change the pop-up showed: ${r.was}`);
     if (r.off) { // clicked, and the page still said "not selected": not something to report as done
@@ -1023,6 +1038,64 @@
       return { status: 'changed', detail: `${r.detail} (selected; the page does not show whether it was selected before, so this is reported as a change on every run)`, again: true };
     }
     return r;
+  }
+
+  // Some Accounts Center settings are kept per account: the row opens a pop-up, "Select an
+  // account", with one button per account that shows the account's name, its product ("Facebook",
+  // "Instagram") and the current value. The value there is not an option: clicking it opens the
+  // account. (Up to 1.6.3 it was taken for the option, clicked, and reported as a change.)
+  const PRODUCTS = ['facebook', 'instagram', 'messenger', 'threads', 'whatsapp', 'meta horizon', 'meta quest'];
+  function accountRows() {
+    const layer = topLayer();
+    if (!layer || !findText(t('selectAccount'), { root: layer, mode: 'includes' }).length) return [];
+    const pieces = (el) => {
+      const out = [];
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) { const raw = clip(n.nodeValue, 80); if (raw) out.push({ raw, text: norm(raw) }); }
+      return out;
+    };
+    const found = [...layer.querySelectorAll('[role="button"],[role="link"],button,a')]
+      .filter((el) => visible(el) && pieces(el).some((x) => PRODUCTS.includes(x.text)));
+    return found.filter((el) => !found.some((o) => o !== el && el.contains(o))).map((el) => {
+      const all = pieces(el);
+      const at = all.findIndex((x) => PRODUCTS.includes(x.text));
+      return { el, product: all[at], after: all.slice(at + 1) }; // after the product comes the value
+    });
+  }
+
+  // Sets a per-account setting on every Facebook account in the pop-up. Accounts of other products
+  // are read and reported, not changed: this script is about Facebook.
+  async function perAccount(s, value) {
+    const wanted = strictness(value[0]);
+    const said = [];
+    const seen = new Set();
+    let changed = false, last = null;
+    for (let i = 0; i < 12; i++) {
+      const rows = accountRows();
+      const next = rows.map((r, n) => ({ ...r, key: `${r.product.text}#${rows.slice(0, n).filter((x) => x.product.text === r.product.text).length}` }))
+        .find((r) => !seen.has(r.key));
+      if (!next) break;
+      seen.add(next.key);
+      const shown = next.after.find((x) => hit(x.text, value, s.mode || 'exact'));
+      const stricter = next.after.find((x) => wanted >= 0 && strictness(x.text) > wanted);
+      const now = next.after.map((x) => x.raw).join(' ') || 'no value';
+      if (next.product.text !== 'facebook') {
+        said.push(`${next.product.raw} shows “${now}” (not a Facebook account: left as it is)`);
+      } else if (shown) {
+        said.push(`${next.product.raw}: ${shown.raw}`);
+      } else if (stricter) {
+        said.push(`${next.product.raw}: ${stricter.raw} (stricter than ${describe(value)}, left as it is)`);
+      } else {
+        await openRow(next.el);
+        last = await settled(await choose(value, s.mode), s);
+        if (last.status === 'changed') changed = true;
+        said.push(`${next.product.raw}: ${last.detail}`);
+        // Back to the list of accounts for the next one.
+        if (!(await waitFor(() => accountRows().length, 2000).catch(() => 0))) await goBack(1);
+      }
+    }
+    if (!said.length) throw new Error('the list of accounts was empty');
+    return { status: changed ? 'changed' : 'already', detail: said.join(' · '), again: !!(last && last.again) };
   }
 
   // What is on screen when a step fails, for the log: enough to correct a label, with
