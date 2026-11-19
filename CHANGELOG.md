@@ -3,6 +3,34 @@
 Notable changes to this project. Versions follow [semantic versioning](https://semver.org/).
 Each release on GitHub carries the section for its version.
 
+## [1.7.0]
+
+On the `dev` branch, not released yet.
+
+### Added
+
+- **Ad topics are handled like advertisers.** The "Ad topics: See less" task now has:
+  - a count of the list and a second progress bar ("Topics: 12 of 530"), with the time left;
+  - a row per topic in the live table, and a line per topic in the log with its result;
+  - memory: a topic that is done is remembered, and with "Skip remembered advertisers and ad topics" on it is not opened again;
+  - an **Ad topics** table in the report, with **Export topics CSV** and **Copy topics CSV** (a file of its own);
+  - a place in the backup file, next to the advertisers.
+
+### Fixed
+
+- **Ad topics: 8 topics in 45 minutes, 520 never reached** (a live run of 1.6.4). The step logged nothing per topic, so the log did not show why. What changed:
+  - A topic only counts as opened once a "See less" turns up that was not on screen before the topic was clicked and is not inside a topic's row. The pop-up can have a "See less" of its own (a tab, a filter); clicking that changes no topic and swaps the list.
+  - In a long list only the container that holds most of the listed rows is the list. Tabs, filters and other buttons of the pop-up are not taken for entries.
+  - A row is picked from the whole list, not only from the part that is on screen.
+  - Looking at a long list is much cheaper: what was found is kept for a moment instead of being worked out again several times per step.
+  - Loading more of a list is limited to four minutes at a time, and the log says when the page is loaded again and what the pop-up showed when the list gets stuck.
+- What the page showed at the first failure of a list step is kept across page loads, so it reaches the report.
+- A list step stops after eight entries in a row could not be handled (three when nothing has worked yet), and says so.
+
+### Changed
+
+- The options are now "Remember processed advertisers and ad topics" and "Skip remembered advertisers and ad topics".
+
 ## [1.6.4] - 2026-11-19
 
 From a live run of 1.6.3, whose log showed why one setting was reported as changed on every run.
@@ -122,6 +150,7 @@ Development versions, not published.
 - **1.1.0** - Remembered advertisers, log saving, progress bars with time left, advertiser details as CSV.
 - **1.0.0** - First version: the menu, the advertiser and ad-data tasks, the three privacy levels, dry run and the report.
 
+[1.7.0]: https://github.com/privaterra/fb-ad-disable/compare/v1.6.4...dev
 [1.6.4]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.6.4
 [1.6.3]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.6.3
 [1.6.2]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.6.2

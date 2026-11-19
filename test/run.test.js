@@ -384,32 +384,67 @@ test('progress bars, advertiser details CSV, saved log and remembered advertiser
   await context.close();
 });
 
-test('ad topics: "See all" next to the heading, then "See less" for each topic', async () => {
+test('ad topics: "See all" next to the heading, then "See less" for each topic, counted, listed, remembered and exported', async () => {
   const context = await browser.newContext();
   const events = await mockFacebook(context, { inject: true });
-  await fakeUserscriptApi(context);
+  const values = await fakeUserscriptApi(context);
   const page = await context.newPage();
+  const p = panel(page);
   await page.goto('https://accountscenter.facebook.com/ads/');
   await page.evaluate(() => window.__openMenu());
-  await configureAndStart(page, { tasks: ['adsettings', 'topics'] }); // ad settings first, so the other tab is showing
+  await configureAndStart(page, { tasks: ['adsettings', 'topics'], options: { saveLog: true } }); // ad settings first, so the other tab is showing
+  // Like the advertiser steps: a second bar with the count, and a table that fills in as the run goes.
+  await p.locator('#advlabel', { hasText: /^Topics: \d+ of 14$/ }).waitFor();
+  await p.locator('#advrows tbody tr', { hasText: 'Alcohol' }).waitFor();
+  assert.match(await p.locator('#advrows tbody tr', { hasText: 'Alcohol' }).textContent(), /set to “See less” · remembered/);
   let r = await report(page);
   assert.equal(r.topics.status, 'changed');
+  assert.match(r.topics.text, /Changed: 13 topics set to “See less”, 1 already “See less”$/);
+  const TOPICS = ['Alcohol', 'Cryptocurrency', 'Dating', 'Fast food', 'Gambling', 'Insurance', 'Loans', 'Parenting', 'Pets', 'Politics',
+    'Tobacco', 'Travel', 'Video games', 'Weight loss'];
   assert.deepEqual(events.filter((e) => e.type === 'topic').map((e) => `${e.name}:${e.value}`).sort(),
-    ['Alcohol:See less', 'Parenting:See less', 'Pets:See less']);
+    TOPICS.filter((x) => x !== 'Gambling').map((x) => `${x}:See less`));
+  // The pop-up's own "See less" tab and its other buttons are never taken for a topic or for the choice.
+  assert.deepEqual(events.filter((e) => e.type === 'decoy'), []);
+  assert.deepEqual(events.filter((e) => e.type === 'topicopened').map((e) => e.name).sort(), TOPICS, 'each topic is opened once');
   // The ad rows under their current names; the "Ads shown outside of Meta" heading is not mistaken for a row.
   assert.deepEqual(sets(events), { ad_partners: 'off', ad_outside: 'off', ad_about_meta: false, ad_social: 'Only me' });
-  assert.deepEqual(events.filter((e) => e.type === 'decoy'), []);
 
-  // Second run: the rows now say so themselves, and nothing is opened or clicked for them.
+  // One log line per topic, with its result.
+  const log = (await saved(page, 'savelog')).text;
+  assert.match(log, /\d\d:\d\d:\d\d   \[ 1\/14\] Alcohol → set to “See less”, remembered\n/);
+  assert.match(log, /\[ ?\d+\/14\] Gambling → already “See less”, remembered\n/);
+  assert.equal((log.match(/→ set to “See less”, remembered\n/g) || []).length, 13);
+
+  // The report lists the topics in a table of their own, with their own CSV.
+  assert.equal(await p.locator('#topics tbody tr').count(), 14);
+  assert.equal(await p.locator('#advertisers').count(), 0, 'no advertiser was processed in this run');
+  const csv = await saved(page, 'topicscsv');
+  assert.match(csv.file, /^fb-ad-disable-topics-[\d-]+\.csv$/);
+  const rows = parseCsv(csv.text.replace(/^\uFEFF/, ''));
+  assert.deepEqual(Object.keys(rows[0]), ['name', 'result', 'action', 'remembered', 'error', 'processed_at', 'dry_run']);
+  assert.deepEqual(rows.map((x) => x.name).sort(), TOPICS);
+  assert.deepEqual(rows.find((x) => x.name === 'Pets').result, 'set to “See less”');
+  // Remembered next to the advertisers, and in the menu's count.
+  const kept = JSON.parse(values.get('fbAdDisableAdvertisers'));
+  assert.equal(Object.keys(kept).filter((k) => k.startsWith('topic:')).length, 14);
+  assert.deepEqual([kept['topic:pets'].task, kept['topic:pets'].confirmed], ['topic', true]);
+
+  // Second run: the ad rows now say so themselves, and every topic is remembered: none is opened.
   const before = events.length;
-  await panel(page).locator('button[name="menu"]').click();
-  await configureAndStart(page, { tasks: ['adsettings'] });
+  await p.locator('button[name="menu"]').click();
+  assert.match(await p.locator('#saved').textContent(), /^0 advertisers and 14 ad topics in the database, 14 of them done\.$/);
+  await configureAndStart(page, { tasks: ['adsettings', 'topics'], options: { saveLog: true } });
+  await p.locator('#step').waitFor();
   r = await report(page);
   assert.equal(r.ad_partners.status, 'already');
   assert.match(r.ad_partners.text, /not using this information/);
   assert.equal(r.ad_outside.status, 'already');
   assert.equal(r.ad_about_meta.status, 'already');
-  assert.deepEqual(events.slice(before).filter((e) => ['ad_partners', 'ad_outside', 'ad_about_meta'].includes(e.id)), []);
+  assert.equal(r.topics.status, 'already');
+  assert.match(r.topics.text, /Already set: 0 topics set to “See less”, 14 skipped as remembered$/);
+  assert.deepEqual(events.slice(before).filter((e) => ['ad_partners', 'ad_outside', 'ad_about_meta'].includes(e.id) || /^topic/.test(e.type) || e.type === 'decoy'), []);
+  assert.match((await saved(page, 'savelog')).text, /14 topics skipped: remembered from earlier runs\n/);
   await context.close();
 });
 

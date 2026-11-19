@@ -330,15 +330,38 @@ const pages = {
       }, 600);
       return group;
     }
-    const topic = (name) => m.el('div', { role: 'button', onclick: () => {
-      m.dialog(name, 'Back', m.radios(['No preference', 'See less'], 'No preference', (o) => m.rec('topic', { name, value: o })));
+    // Ad topics: a pop-up with a row of tabs and a long list that scrolls, so only some topics are on
+    // screen. A topic opens its own page with the choice. What is hard about it:
+    //  - one of the tabs is called "See less" too: clicking it instead of a topic's choice changes
+    //    nothing and swaps the list for another one;
+    //  - a row does not say what the topic is set to;
+    //  - "Gambling" is set to "See less" already.
+    // A choice is kept in this tab, so a second run finds it.
+    const TOPICS = ['Alcohol', 'Parenting', 'Pets', 'Gambling', 'Dating', 'Weight loss', 'Politics', 'Tobacco', 'Cryptocurrency',
+      'Loans', 'Insurance', 'Fast food', 'Video games', 'Travel'];
+    const lessOf = () => JSON.parse(sessionStorage.getItem('mock:topics') || '["Gambling"]');
+    const topic = (name) => m.el('div', { role: 'button', tabindex: '0', style: 'height:24px', onclick: () => {
+      m.rec('topicopened', { name });
+      m.dialog(name, 'Back', m.radios(['No preference', 'See less'], lessOf().includes(name) ? 'See less' : 'No preference', (o) => {
+        sessionStorage.setItem('mock:topics', JSON.stringify(o === 'See less' ? [...new Set([...lessOf(), name])] : lessOf().filter((x) => x !== name)));
+        m.rec('topic', { name, value: o });
+      }));
     } }, m.span(name));
+    const topicsPopup = () => {
+      const list = m.el('div', { style: 'height:120px;overflow:auto' }, TOPICS.map(topic));
+      m.dialog('Ad topics', 'Back',
+        m.el('div', { style: 'display:flex;gap:8px' },
+          m.el('div', { role: 'button', tabindex: '0', onclick: () => m.rec('decoy', { what: 'tab: All topics' }) }, m.span('All topics')),
+          m.el('div', { role: 'button', tabindex: '0', onclick: () => { m.rec('decoy', { what: 'tab: See less' }); list.replaceChildren(); } }, m.span('See less'))),
+        m.el('div', { role: 'button', tabindex: '0', onclick: () => m.rec('decoy', { what: 'Learn more' }) }, m.span('Learn more')),
+        list);
+    };
     const customize = m.el('div', null,
       m.el('div', { style: 'display:flex;justify-content:space-between' }, m.el('h2', null, m.span('Advertisers you saw ads from')),
         m.el('div', { role: 'button', onclick: () => m.rec('decoy', { what: 'wrong See all' }) }, m.span('See all'))),
       m.el('p', null, m.span('Choose the ad topics you want to see less of.')),
       m.el('div', { style: 'display:flex;justify-content:space-between' }, m.el('h2', null, m.span('Ad topics')),
-        m.el('div', { role: 'button', onclick: () => m.dialog('Ad topics', 'Back', ['Alcohol', 'Parenting', 'Pets'].map(topic)) }, m.span('See all'))));
+        m.el('div', { role: 'button', onclick: topicsPopup }, m.span('See all'))));
     const show = (which) => { customize.hidden = which !== customize; manage.hidden = which !== manage; };
     m.main().append(
       m.el('h1', null, m.span('Ad preferences')),
