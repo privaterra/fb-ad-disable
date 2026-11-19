@@ -181,7 +181,11 @@ test('dry run changes nothing and reports what it would do', async () => {
   await configureAndStart(page, { level: 'moderate', dryRun: true, tasks: ['lists', 'seen', 'adsettings', 'offclear', 'offfuture'] });
   const r = await report(page);
 
-  assert.deepEqual(events, [], 'no setting is touched');
+  // Opening an account in the per-account pop-up is looking, like opening an advertiser: the mock
+  // notes it, and it changes nothing.
+  assert.deepEqual(events.filter((e) => e.type !== 'opened'), [], 'no setting is touched');
+  assert.equal(r.ad_social.status, 'dry');
+  assert.match(r.ad_social.text, /would select “Only me”/);
   assert.equal(r.lists.status, 'dry');
   assert.match(r.lists.text, /3 of 6 advertisers would be disabled, 1 had no list controls, 1 failed/);
   // This account no longer has the off-Meta page. What replaced it has no history to clear,
