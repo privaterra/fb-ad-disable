@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FB Ad Disable & Privacy Hardener
 // @namespace    https://github.com/privaterra/fb-ad-disable
-// @version      1.6.4
+// @version      1.7.0
 // @description  Opt out of advertiser lists, restrict ad data use and tighten Facebook privacy settings from one menu.
 // @license      MIT
 // @homepageURL  https://github.com/privaterra/fb-ad-disable
@@ -32,7 +32,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.6.4';
+  const VERSION = '1.7.0';
   const TAG = '[fb-ad-disable]';
   const KEY = 'fbAdDisableState';
   const MEMORY_KEY = 'fbAdDisableAdvertisers';
@@ -73,6 +73,7 @@
     unhide: { en: ['unhide', 'unhide ads', 'show ads'] },
     hidden: { en: ['you hid their ads', 'you chose to hide all ads'] },
     selectAccount: { en: ['select an account', 'choose an account', 'select account'] },
+    seeLess: { en: ['see less', 'see less of this topic', 'see fewer'] },
     on: { en: ['on', 'yes', 'enabled'] },
     off: { en: ['off', 'no', 'disabled'] },
   };
@@ -630,7 +631,15 @@
   // With `off` or `unread`, `shown` is what the pop-up looked like, for the log.
   async function choose(needles, mode = 'exact', timeout = 8000) {
     const find = () => findOption(needles, mode)[0];
-    let el = await waitFor(find, timeout, `option “${needles[0]}”`);
+    await waitFor(find, timeout, `option “${needles[0]}”`);
+    return pick(find);
+  }
+
+  // The same for an option that is already found. `find` returns it afresh each time: the page may
+  // have drawn it again.
+  async function pick(find) {
+    let el = find();
+    if (!el) throw new Error('the option is no longer there');
     const name = say(el);
     const selected = () => { const o = find(); return !!o && checkedState(o) === true; };
     // A pop-up can open before it knows the current choice, with nothing selected yet. Clicking
@@ -889,8 +898,12 @@
     return '"' + text.replace(/"/g, '""') + '"';
   }
 
-  function toCsv(rows) {
-    return '\uFEFF' + [CSV_COLUMNS, ...rows.map((r) => CSV_COLUMNS.map((c) => r[c]))]
+  // Ad topics have their own, smaller file.
+  const TOPIC_COLUMNS = ['name', 'result', 'action', 'remembered', 'error', 'processed_at', 'dry_run'];
+  const isTopic = (r) => r.task === 'topic';
+
+  function toCsv(rows, columns = CSV_COLUMNS) {
+    return '\uFEFF' + [columns, ...rows.map((r) => columns.map((c) => r[c]))]
       .map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
   }
 
@@ -1463,10 +1476,19 @@
   // "Website", the line with "Unhide"…), some with a button that does harm when clicked. So what
   // an entry is gets decided the way a person would: only rows that sit with the rows in front,
   // and only while those are in front. Nothing else in the pop-up is ever clicked as an entry.
-  async function drillList(doneKey, action, { words, each = () => {}, ignore = [], already, ready } = {}) {
+  async function drillList(doneKey, action, { words, each = () => {}, ignore = [], already, panel, probe, ready } = {}) {
     const scope = () => topLayer() || document.body;
     const skip = [...t('back'), ...t('close'), ...t('seeAll'), ...t('seeMore'), ...t('confirm'), ...ignore];
-    const all = () => {
+    // A long list is looked at many times in a row. What was found is kept for a moment, and thrown
+    // away after everything this function does to the page.
+    let memo = { at: 0 };
+    const kept = (what, find) => {
+      if (Date.now() - memo.at > 80) memo = { at: Date.now() };
+      if (!(what in memo)) memo[what] = find();
+      return memo[what];
+    };
+    const fresh = () => { memo = { at: 0 }; };
+    const all = () => kept('all', () => {
       const list = [...scope().querySelectorAll('[role="listitem"],[role="row"]')].filter((el) => visible(el) && norm(el.textContent));
       if (list.length || !topLayer()) return list;
       // A pop-up whose entries are plain buttons or links.
@@ -1474,27 +1496,46 @@
         const text = norm(el.textContent);
         return visible(el) && text.length > 1 && text.length < 120 && !skip.includes(text) && !skip.includes(norm(el.getAttribute('aria-label')));
       });
-    };
+    });
     // An entry is known by its name: its status line ("You hid their ads") changes as the run goes.
     const keyOf = (el) => norm(firstText(el));
     const done = new Set(state[doneKey] || []);
     const names = new Set(state[doneKey + 'Names'] || []); // every entry the list has shown
-    const count = state[doneKey + 'Count'] || (state[doneKey + 'Count'] = { changed: 0, dry: 0, same: 0, failed: 0, unsure: 0 });
-    count.unsure = count.unsure || 0; // a run saved by an earlier version has no such count
-    let fails = 0, seen = '', note = '';
+    const count = state[doneKey + 'Count'] || (state[doneKey + 'Count'] = { changed: 0, dry: 0, same: 0, failed: 0, unsure: 0, known: 0 });
+    count.unsure = count.unsure || 0; // a run saved by an earlier version has no such counts
+    count.known = count.known || 0;
+    let fails = 0, note = '';
+    let seen = state[doneKey + 'Seen'] || ''; // what the page showed at the first failure, kept across page loads
 
     // The element that holds the list's rows, while the list is what is in front; null otherwise.
     // Two rows known to be entries (any row, on the first look) must be in front: an opened page
     // shows one known name at most, the entry's own. And no opened page may be in front.
-    const listBox = () => {
+    const listBox = () => kept('box', () => {
       const front = all().filter((el) => (!names.size || names.has(keyOf(el))) && shown(el));
       if (new Set(front.map(keyOf)).size < Math.min(2, names.size || 1)) return null;
-      if (ready && ready()) return null;
+      if (panel && panel()) return null;
       let box = front[0].parentElement;
       for (const el of front) while (box && !box.contains(el)) box = box.parentElement;
       return box;
-    };
-    const rows = () => { const box = listBox(); return box ? all().filter((el) => box.contains(el)) : []; };
+    });
+    // In a long list, the one container that holds most of what is listed: the list itself. Tabs,
+    // filters and other buttons of the pop-up sit outside it and are not entries.
+    const listRoot = () => kept('root', () => {
+      const items = all();
+      if (items.length < 12) return null;
+      const tally = new Map();
+      for (const el of items) for (let p = el.parentElement, d = 0; p && d < 8; p = p.parentElement, d++) tally.set(p, (tally.get(p) || 0) + 1);
+      let best = null;
+      for (const [p, n] of tally) if (n >= items.length * 0.7 && (!best || best.contains(p))) best = p; // the deepest such
+      return best;
+    });
+    const inRoot = (el) => { const root = listRoot(); return !root || root.contains(el); };
+    // What can be learned as entries now: the rows that sit with the rows in front.
+    const rows = () => { const box = listBox(); return box ? all().filter((el) => box.contains(el) && inRoot(el)) : []; };
+    // What can be picked now: every listed row that was learned as an entry, wherever in the list
+    // it is. (A long list comes in several containers; the rows in front are only one of them.)
+    const entries = () => (listBox() ? all().filter((el) => names.has(keyOf(el)) && inRoot(el)) : []);
+    const inEntry = (el) => all().some((item) => names.has(keyOf(item)) && item.contains(el));
     const listShowing = () => !!listBox();
     const learn = () => {
       for (const el of rows()) names.add(keyOf(el));
@@ -1504,6 +1545,7 @@
     // Close whatever is in front of the list: the Back button of the page in front, one press at a
     // time, giving a page that closes slowly the time to go before pressing anything else.
     const backToList = async () => {
+      fresh();
       for (let i = 0; i < 4 && !listShowing(); i++) {
         if (await waitFor(listShowing, i ? 3000 : 1000).catch(() => false)) break;
         const backs = findLabel(t('back'), scope());
@@ -1511,6 +1553,7 @@
         if (!btn) break;
         click(btn);
         await settle();
+        fresh();
       }
       return (await waitFor(listShowing, 3000).catch(() => false)) === true;
     };
@@ -1519,43 +1562,55 @@
     const startOver = async (why, left) => {
       const stall = state[doneKey + 'Stall'] || (state[doneKey + 'Stall'] = { at: -1, n: 0 });
       if (done.size > stall.at) { stall.at = done.size; stall.n = 0; }
-      if (++stall.n <= 2) { await save(); throw new Renav(why, done.size); }
+      if (++stall.n <= 2) {
+        log(`  ${why} (${done.size} of ${names.size} done): loading the page again`);
+        await save();
+        throw new Renav(why, done.size);
+      }
+      log(`  ${why} (${done.size} of ${names.size} done). The pop-up showed: ${snapshot()}`);
       note = left;
     };
 
-    await waitFor(() => all().length, 8000, 'a list on this page');
+    await waitFor(() => { fresh(); return all().length; }, 8000, 'a list on this page');
     // More entries: a "See more" in the pop-up, or the end of a list that loads as it scrolls.
     // Keeps going while the list grows, until `until()` is true or nothing more comes.
     const load = async (until) => {
       if (!topLayer()) return false;
-      for (let i = 0, stale = 0; i < 120 && stale < 2; i++) {
+      const started = Date.now();
+      for (let i = 0, stale = 0; i < 120 && stale < 2 && Date.now() - started < 240000; i++) {
         check();
+        fresh();
         if (until() || !listShowing()) break;
-        const before = rows().length;
+        const before = all().length, known = names.size;
         const btns = searchText(scope(), [...t('seeMore'), ...t('seeAll')], 'exact').filter(shown);
-        if (btns.length) { btns.forEach(click); await settle(); }
+        if (btns.length) { btns.forEach(click); await settle(); fresh(); }
         const list = rows();
-        if (list.length) { try { list[list.length - 1].scrollIntoView({ block: 'end' }); } catch (e) { /* ignore */ } await settle(); }
-        stale = rows().length > before ? 0 : stale + 1;
+        if (list.length) { try { list[list.length - 1].scrollIntoView({ block: 'end' }); } catch (e) { /* ignore */ } await settle(); fresh(); }
         learn();
+        stale = all().length > before || names.size > known ? 0 : stale + 1;
         ui.progress(`${names.size} entries found…`);
       }
+      fresh();
       return until();
     };
-    const more = () => load(() => rows().some((x) => !done.has(keyOf(x))));
+    const more = () => load(() => entries().some((x) => !done.has(keyOf(x))));
     // Count first: load the whole list, so the bar has its total and nothing is left unseen at the end.
     learn();
     await load(() => false);
     ui.progress('');
     each(null, null, done.size, learn());
-    while (fails < 3 && done.size < 1000) {
+    // A few failures in a row end the step: three when nothing has worked yet (the labels are wrong),
+    // more once entries are being handled (single entries can fail to open).
+    const tolerated = () => (count.changed + count.dry + count.same + count.unsure ? 8 : 3);
+    while (fails < tolerated() && done.size < 2000) {
       check();
+      fresh();
       if (!listShowing() && !(await backToList())) {
         await startOver('the list is no longer on screen', ', the list could not be brought back on screen: run this task again');
         break;
       }
       learn();
-      const el = rows().find((x) => !done.has(keyOf(x)));
+      const el = entries().find((x) => !done.has(keyOf(x)));
       if (!el) {
         if (await more()) continue;
         const missing = names.size - done.size;
@@ -1565,21 +1620,27 @@
       const key = keyOf(el);
       const name = firstText(el);
       let outcome, info = {}, error = '', confirmed = true;
-      if (already && already(el)) {
+      const state0 = already ? already(el) : false;
+      if (state0 === 'known') { // done in an earlier run and remembered: not opened
+        count.known++;
+        outcome = 'known';
+      } else if (state0) {
         count.same++;
         outcome = 'same';
       } else {
         try {
           const target = el.querySelector('a,[role="button"],[role="link"]') || el;
+          const was = probe ? probe() : null; // what was on screen before, to tell what the click brought
           let got = null;
           click(target);
           await settle();
           if (ready) { // the entry counts as opened only once its own page is in front
-            got = await waitFor(ready, 5000).catch(() => null);
+            const there = () => { fresh(); return ready(was, name, { inEntry }); };
+            got = await waitFor(there, 5000).catch(() => null);
             if (!got && listShowing()) { // the click did nothing: the whole sequence a mouse produces
               press(target);
               await settle();
-              got = await waitFor(ready, 5000).catch(() => null);
+              got = await waitFor(there, 5000).catch(() => null);
             }
             if (!got) throw new Error('its page did not open');
           }
@@ -1600,7 +1661,7 @@
             outcome = 'failed';
             error = e.message;
             fails++;
-            seen = seen || snapshot();
+            if (!seen) { seen = snapshot(); state[doneKey + 'Seen'] = seen; }
           }
         }
         await backToList();
@@ -1611,11 +1672,12 @@
       await save();
     }
     const said = words || { dry: (c) => `${c.dry} would be changed`, done: (c) => `${c.changed} changed of ${done.size}` };
-    if (fails >= 3 && !(count.changed + count.dry + count.same + count.unsure)) {
+    if (fails >= tolerated() && !(count.changed + count.dry + count.same + count.unsure + count.known)) {
       const e = new Error('none of the entries in the list could be handled');
       e.seen = seen;
       throw e;
     }
+    if (fails >= tolerated()) note += `, stopped after ${fails} entries in a row could not be handled`;
     const failed = (count.unsure ? `, ${count.unsure} clicked but not shown as changed afterwards` : '') +
       (count.failed ? `, ${count.failed} could not be handled` : '') + note;
     if (state.opts.dryRun) return { status: 'dry', detail: said.dry(count) + failed, seen };
@@ -1713,7 +1775,8 @@
       const verify = async () => !!(await waitFor(() => { const c = control(); return c && !c.hide; }, 4000).catch(() => null));
       return { status: 'changed', info, verify };
     }, {
-      ready: control,
+      panel: control,
+      ready: () => control(),
       ignore: ['all advertisers', 'all accounts'], // the filters above the list
       // The list already says which advertisers are hidden. They are only opened when their details are wanted.
       // With details wanted, a hidden advertiser is still opened once; after that its details come from the database.
@@ -1745,6 +1808,8 @@
     });
   }
 
+  // "See less" for every ad topic Facebook lists. Works like the advertiser steps: a count and a
+  // bar, one line and one table row per topic, and topics that are done are remembered.
   async function runTopics() {
     const tab = findText(['customize ads', 'customise ads'])[0];
     if (tab) { click(tab); await settle(); }
@@ -1753,8 +1818,62 @@
     if (!label) throw new RowMissing('could not find the “Ad topics” section');
     const all = rowButton(label, [...t('seeAll'), 'view and manage topics', 'see all topics']); // "See all" next to it
     await openRow(all || label);
-    return drillList('topicsDone', () => choose(['see less'], 'exact', 4000),
-      { words: { dry: (c) => `${c.dry} topics would be set to “See less”`, done: (c) => `${c.changed} topics set to “See less”` } });
+
+    const prog = state.adv.topics || (state.adv.topics = { done: 0, total: 0, skipped: 0, noun: 'Topics' });
+    ui.advertisers(prog);
+    // The "See less" a person would see right now. One can also be part of the list itself (a tab,
+    // a filter, the value shown on a topic), so a topic only counts as opened when a "See less"
+    // turns up that was not there before the topic was clicked, and is not inside a topic's row.
+    const options = () => findOption(t('seeLess'), 'exact').filter(shown);
+    const pieces = (el) => {
+      const out = [];
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) { const text = norm(n.nodeValue); if (text) out.push(text); }
+      return out;
+    };
+    let last = Date.now();
+    const same = (c) => (c.same ? `, ${c.same} already “See less”` : '') + (c.known ? `, ${c.known} skipped as remembered` : '');
+    const res = await drillList('topicsDone', async (opt) => {
+      // The option that came up, or the one the page drew in its place.
+      const r = await pick(() => (opt.isConnected && visible(opt) ? opt : options()[0] || null));
+      if (r.status !== 'changed') return { status: 'already' };
+      if (r.off) throw new Error('“See less” was clicked, but the page still showed it as not selected');
+      return { status: 'changed' };
+    }, {
+      ignore: [...t('seeLess'), 'no preference', 'learn more'],
+      probe: () => new Set(options()),
+      ready: (was, name, { inEntry }) => options().find((o) => !was.has(o) && !inEntry(o)) || null,
+      // Not opened: a topic remembered as done, or one whose row already says "See less".
+      already: (el) => {
+        if (pieces(el).slice(1).some((x) => t('seeLess').includes(x))) return true;
+        return state.opts.skipKnown && (book.get('topic:' + norm(firstText(el))) || {}).confirmed === true ? 'known' : false;
+      },
+      words: {
+        dry: (c) => `${c.dry} topics would be set to “See less”${same(c)}`,
+        done: (c) => `${c.changed} topics set to “See less”${same(c)}`,
+      },
+      each: (name, outcome, did, total, info, error, confirmed) => {
+        prog.done = did;
+        prog.total = Math.max(prog.total, total);
+        if (outcome === 'known') prog.skipped = (prog.skipped || 0) + 1;
+        ui.advertisers(prog);
+        if (name) {
+          const result = outcome === 'changed' && !confirmed ? '“See less” clicked, not shown as selected afterwards'
+            : { changed: 'set to “See less”', dry: 'would be set to “See less” (dry run)', same: 'already “See less”',
+              known: 'skipped (remembered from an earlier run)', failed: 'failed' }[outcome];
+          const rec = record({ task: 'topic', name, result, error, action: outcome === 'changed' ? 'selected “See less”' : 'none',
+            remembered: outcome === 'known' ? 'yes' : undefined },
+          outcome === 'known' ? null : 'topic:' + norm(name), confirmed && (outcome === 'changed' || outcome === 'same'));
+          if (outcome !== 'known') log(advLine(rec, did, prog.total)); // the skipped ones get one line together, below
+          if (outcome !== 'known') tick('topics', last);
+        }
+        last = Date.now();
+        eta();
+      },
+    });
+    const known = (state.topicsDoneCount || {}).known || 0;
+    if (known) log(`  ${known} topics skipped: remembered from earlier runs`);
+    return res;
   }
 
   // Finds a row, walking down the Accounts Center menus to it when it is not on screen yet.
@@ -1936,7 +2055,7 @@
     if (on('seen')) units.push({ id: 'seen', advertisers: true, title: 'Hide advertisers you have seen', url: WWW + '/adpreferences/advertisers',
       manual: 'Click “Hide ads” next to each advertiser.', run: runSeen });
     if (on('adsettings')) for (const s of AD_SETTINGS) units.push(setting(s, s.all));
-    if (on('topics')) units.push({ id: 'topics', title: 'Ad topics: See less', url: ADS,
+    if (on('topics')) units.push({ id: 'topics', advertisers: true, noun: 'topics', title: 'Ad topics: See less', url: ADS,
       manual: 'On the “Customize ads” tab, click “See all” next to “Ad topics”, then choose “See less” for each topic.', run: runTopics });
     const gone = 'Facebook does not offer this on your account. Meta is replacing it with “Activity from other businesses”, which the ad data task sets';
     const offPath = 'Accounts Center → Your information and permissions → Your activity off Meta technologies (or “Activity from other businesses”)';
@@ -2061,7 +2180,7 @@
       if (!(e instanceof Abort)) { log('Stopped by an unexpected error: ' + e.message); console.error(TAG, e); } else log('Stopped.');
       const unit = units[state.idx];
       if (unit) { // the report says where the run was cut short, with the advertiser counts so far
-        const sofar = unit.advertisers && state.adv[unit.id] ? ` (${state.adv[unit.id].done} of ${state.adv[unit.id].total} advertisers looked at)` : '';
+        const sofar = unit.advertisers && state.adv[unit.id] ? ` (${state.adv[unit.id].done} of ${state.adv[unit.id].total} ${unit.noun || 'advertisers'} looked at)` : '';
         state.results.push({ id: unit.id, task: unit.task, title: unit.title, url: unit.url, manual: unit.manual, status: 'manual',
           detail: `stopped before this step finished${sofar}`, seen: unit.id === 'lists' ? state.listsSeen || '' : '' });
       }
@@ -2203,10 +2322,10 @@
     for (const [key, e] of Object.entries(input)) {
       if (out.length >= 20000) break;
       // The two kinds of key this script writes. Nothing else, so no "__proto__" either.
-      if (key.length > 400 || !(key.startsWith('/ads/audience_based_advertising/') || key.startsWith('seen:'))) continue;
+      if (key.length > 400 || !(key.startsWith('/ads/audience_based_advertising/') || key.startsWith('seen:') || key.startsWith('topic:'))) continue;
       if (!e || typeof e !== 'object' || Array.isArray(e)) continue;
       out.push([key.startsWith('/') ? listKey(key) : key, {
-        task: key.startsWith('/') ? 'list-based' : 'seen',
+        task: key.startsWith('/') ? 'list-based' : key.startsWith('topic:') ? 'topic' : 'seen',
         name: short(e.name, 200), result: short(e.result, 80), at: past(e.at), confirmed: e.confirmed !== false,
         category: short(e.category, 200), about: short(e.about, 300), followers: short(e.followers, 80), website: short(e.website, 300),
         advertiser_id: short(e.advertiser_id, 40), link: safeUrl(e.link), list_uses: short(e.list_uses, 400),
@@ -2499,7 +2618,9 @@
         known.replaceChildren(` ${n} remembered${MODE === 'console' ? ' on this site' : ''}.`,
           all ? h('button', { class: 'link', name: 'forget', type: 'button',
             onclick: async (e) => { e.preventDefault(); await memory.save({}); book = new Map(); showKnown(); } }, 'Forget them') : '');
-        dataLine.textContent = all ? `${all} advertiser${all === 1 ? '' : 's'} in the database, ${confirmedIn(entries)} of them done.`
+        const topicCount = Object.keys(entries).filter((k) => k.startsWith('topic:')).length;
+        const advCount = all - topicCount;
+        dataLine.textContent = all ? `${advCount} advertiser${advCount === 1 ? '' : 's'}${topicCount ? ` and ${topicCount} ad topic${topicCount === 1 ? '' : 's'}` : ''} in the database, ${confirmedIn(entries)} of them done.`
           : 'No advertisers in the database yet.';
         firstTime.hidden = !!(all || (hist && hist.last) || imported);
       };
@@ -2525,10 +2646,10 @@
         h('h3', null, 'Privacy settings level'), h('div', { class: 'sub last', 'data-last': 'privacy' }), levelBoxes,
         h('h3', null, 'Options'),
         option('dry', pref('dryRun', false), 'Dry run', 'Visit every page and report what would change, without changing anything.'),
-        option('remember', pref('remember', true), 'Remember processed advertisers',
-          'Keep a list, in this browser only, of the list-based advertisers confirmed as disabled.'),
-        option('skipKnown', pref('skipKnown', true), 'Skip remembered advertisers',
-          'Only process advertisers that are new since earlier runs.', known),
+        option('remember', pref('remember', true), 'Remember processed advertisers and ad topics',
+          'Keep a list, in this browser only, of the advertisers and ad topics confirmed as done.'),
+        option('skipKnown', pref('skipKnown', true), 'Skip remembered advertisers and ad topics',
+          'Only process advertisers and ad topics that are new since earlier runs.', known),
         option('saveInfo', pref('saveInfo', false), 'Save advertiser details',
           'Keep everything Facebook shows about each advertiser and add CSV export to the report. Advertisers whose ads are already hidden are opened too, to read their details.'),
         option('saveLog', pref('saveLog', true), 'Keep the full log',
@@ -2575,7 +2696,9 @@
       h('td', null, r.name),
       h('td', null, [r.category, r.followers, uses(r)].filter(Boolean).join(' · ')),
       h('td', null, `${mark(r)} ${r.result}${r.remembered && !/^skipped/.test(r.result) ? ' · remembered' : ''}`));
-    const advHead = () => h('thead', null, h('tr', null, h('th', null, 'Advertiser'), h('th', null, 'Details'), h('th', null, 'Result')));
+    const advHead = (what = 'Advertiser') => h('thead', null, h('tr', null, h('th', null, what), h('th', null, 'Details'), h('th', null, 'Result')));
+    const topicRow = (r) => h('tr', { title: r.error || '' }, h('td', null, r.name),
+      h('td', null, `${mark(r)} ${r.result}${r.remembered && !/^skipped/.test(r.result) ? ' · remembered' : ''}`));
 
     // The second bar, shown only while advertisers are being processed. null hides it.
     function paintAdvertisers(p) {
@@ -2584,7 +2707,7 @@
       if (!p) return;
       const skipped = p.skipped || 0;
       advBar.style.width = (p.total ? Math.round((p.done / p.total) * 100) : 0) + '%';
-      advLabel.textContent = `Advertisers: ${p.done - skipped} of ${p.total - skipped}${skipped ? ` · ${skipped} skipped (remembered)` : ''}`;
+      advLabel.textContent = `${p.noun || 'Advertisers'}: ${p.done - skipped} of ${p.total - skipped}${skipped ? ` · ${skipped} skipped (remembered)` : ''}`;
       paintBar(p.total ? p.done / p.total : 0);
     }
 
@@ -2603,7 +2726,7 @@
       logEl = h('pre', null, state.log.join('\n'));
       // Advertisers as they are processed (the last 300 after a page load).
       rowsBody = h('tbody', null, state.records.slice(-300).map(advRow));
-      rowsBox = h('div', { class: 'scroll rows', id: 'advrows', hidden: !state.records.length }, h('table', null, advHead(), rowsBody));
+      rowsBox = h('div', { class: 'scroll rows', id: 'advrows', hidden: !state.records.length }, h('table', null, advHead('Advertiser or topic'), rowsBody));
       fill(stepEl,
         h('div', { class: 'bar', role: 'progressbar', 'aria-label': 'Overall progress' }, barEl),
         h('div', { class: 'cap' }, etaEl, pctEl),
@@ -2642,15 +2765,23 @@
         r.status === 'manual' ? h('div', null, r.manual + ' ', h('a', { href: r.url, target: '_blank', rel: 'noopener' }, 'Open page')) : null,
         r.limited ? h('div', { class: 'warn' }, `${LIMIT_NOTE}.`) : null,
         r.seen ? h('details', null, h('summary', null, 'What the page showed'), r.seen) : null));
-      const rows = state.records || [];
+      const rows = (state.records || []).filter((r) => !isTopic(r));
+      const topics = (state.records || []).filter(isTopic);
       // The advertiser table is always shown; exporting it with the full details is the option.
-      const details = rows.length ? [
+      const details = [...(rows.length ? [
         h('h3', null, `Advertisers (${rows.length})`),
         h('div', { class: 'scroll' }, h('table', { id: 'advertisers' }, advHead(), h('tbody', null, rows.map(advRow)))),
         state.opts.saveInfo ? h('div', { class: 'btns' },
           h('button', { class: 'b', name: 'csv', onclick: () => download(`fb-ad-disable-advertisers-${fileStamp()}.csv`, toCsv(rows), 'text/csv') }, 'Export CSV'),
           copyButton('copycsv', 'Copy CSV', () => toCsv(rows))) : null,
-      ] : [];
+      ] : []), ...(topics.length ? [ // ad topics: their own table and their own file
+        h('h3', null, `Ad topics (${topics.length})`),
+        h('div', { class: 'scroll' }, h('table', { id: 'topics' },
+          h('thead', null, h('tr', null, h('th', null, 'Topic'), h('th', null, 'Result'))), h('tbody', null, topics.map(topicRow)))),
+        h('div', { class: 'btns' },
+          h('button', { class: 'b', name: 'topicscsv', onclick: () => download(`fb-ad-disable-topics-${fileStamp()}.csv`, toCsv(topics, TOPIC_COLUMNS), 'text/csv') }, 'Export topics CSV'),
+          copyButton('copytopicscsv', 'Copy topics CSV', () => toCsv(topics, TOPIC_COLUMNS))),
+      ] : [])];
       fill(
         h('div', { class: 'step', id: 'summary' }, state.opts.dryRun
           ? `Dry run: ${count('dry')} would change, ${count('already')} already set, ${count('manual')} need a manual check`

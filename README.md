@@ -72,8 +72,8 @@ Console mode is fine for a single task such as *Disable list-based advertisers*,
 | **Advertisers and ad data** | Tick the tasks to run (table below). |
 | **Privacy settings level** | Default, Moderate or Max (table below). |
 | **Dry run** | Report what would change without changing anything. |
-| **Remember processed advertisers** (on) | Keep the advertiser database: every advertiser handled, what Facebook says about it and what happened. |
-| **Skip remembered advertisers** (on) | Leave alone the advertisers the database has as done, and only open new ones. The menu shows how many are remembered, with **Forget them** to clear the database. |
+| **Remember processed advertisers and ad topics** (on) | Keep the database: every advertiser and ad topic handled, what Facebook says about it and what happened. |
+| **Skip remembered advertisers and ad topics** (on) | Leave alone the advertisers and ad topics the database has as done, and only open new ones. The menu shows how many are remembered, with **Forget them** to clear the database. |
 | **Save advertiser details** (off) | Keep everything Facebook shows about each advertiser and add CSV export to the report. The advertiser table itself is always shown. |
 | **Keep the full log** (on) | Keep every log line of the run instead of the last 300. **Copy log** and **Save log** are always available, whatever this is set to. |
 | **Speed** | Pause between clicks. Use *Slow* if steps fail on a slow connection. |
@@ -98,6 +98,7 @@ This history is kept in this browser only, next to the remembered advertisers.
 - The **top bar** is overall progress: the step number, the percentage done and the estimated time left.
 - A **second bar** appears while advertisers are being processed. The script first opens the whole advertiser list to count it, then fills the bar as it works through them. When the advertisers are done the bar disappears.
 - The advertiser bar comes straight back after a page load in the middle of an advertiser step, with the count so far.
+- The **Ad topics** step uses the same second bar, labelled "Topics", and the same live table.
 - An **advertiser table** fills in under the bars, one row per advertiser as it is handled: its name, what Facebook says about it (category and followers, or how many list uses were still allowed), and the result: ✅ disabled or ads hidden, ☑️ no change needed or already hidden, ⏭ skipped because remembered, 👁 what a dry run would do, ⚠️ failed. "remembered" marks an advertiser that was added to the remembered list. Hover over a row for the rest of its details.
 - The **log** gets one line per advertiser in the same order, for example `[12/215] Acme · Retail company · 1,234 followers · http://acme.example/ → ads hidden`.
 - **Time left** is estimated from how fast the run is actually going: the average time per step so far, and the average time per advertiser. It is rough at the start and improves as the run proceeds. Until an advertiser list has been counted, the estimate says "plus advertisers not counted yet".
@@ -123,9 +124,9 @@ When a step fails, the report keeps **What the page showed**: the text and contr
 
 ### The advertiser database
 
-With **Remember processed advertisers** on, every advertiser the script handles goes into a database kept in this browser: its name, what Facebook says about it (category, description, followers, website, list uses), what happened, and when.
+With **Remember processed advertisers and ad topics** on, every advertiser the script handles goes into a database kept in this browser: its name, what Facebook says about it (category, description, followers, website, list uses), what happened, and when.
 
-An advertiser counts as **done** once the page itself confirms it: for a list-based advertiser, an "Allow" button is shown and no "Don't allow" button is left; for an advertiser you saw ads from, its ads are hidden. With **Skip remembered advertisers** on, later runs use that:
+An advertiser counts as **done** once the page itself confirms it: for a list-based advertiser, an "Allow" button is shown and no "Don't allow" button is left; for an advertiser you saw ads from, its ads are hidden. With **Skip remembered advertisers and ad topics** on, later runs use that:
 
 - a list-based advertiser that is done is not opened again, which makes repeat runs much shorter;
 - an advertiser whose ads are hidden is not opened again just to read its details: they come from the database.
@@ -134,7 +135,7 @@ Fewer pages opened also means less chance of running into Facebook's rate limit.
 
 - An advertiser the script could not confirm (a failure, or no list-use buttons found) is in the database but not marked done, so it is checked again next time.
 - A dry run does not add to the database.
-- Untick **Skip remembered advertisers** to re-check everyone, or use **Forget them** in the menu to clear the database.
+- Untick **Skip remembered advertisers and ad topics** to re-check everyone, or use **Forget them** in the menu to clear the database.
 - The database never leaves this browser unless you export it. In console mode it is kept in the site's local storage, separately for `www.facebook.com` and `accountscenter.facebook.com`.
 
 ### Saving your data to a file, and importing it
@@ -150,6 +151,18 @@ The file holds three things: your settings (the menu's choices), the advertiser 
 Importing **merges**: for an advertiser or a section that both the file and the browser have, the more recent entry stays, and importing the same file twice adds nothing. The settings in the file replace the menu's. The menu then says what was imported, for example "Imported my-backup.json: settings, 215 advertisers (198 new here), run history."
 
 A file to import is treated as untrusted: only the fields the script knows are read, text is capped in length, and anything else is dropped.
+
+### Ad topics
+
+The **Ad topics: See less** task works through the topic list the way the advertiser tasks work through theirs:
+
+- **Counted first.** The list is loaded to its end, then a second bar shows "Topics: 12 of 530".
+- **One line and one row per topic.** The log says which topic was handled and what happened ("set to “See less”", "already “See less”", "failed" with the reason). The same rows fill the table during the run.
+- **Remembered.** With **Remember processed advertisers and ad topics** on, a topic that is done goes into the database. With **Skip remembered advertisers and ad topics** on, later runs do not open it again; the log says how many were skipped.
+- **In the report.** The report has an **Ad topics** table, with **Export topics CSV** and **Copy topics CSV**. The file is separate from the advertiser file and has these columns: `name`, `result`, `action`, `remembered`, `error`, `processed_at`, `dry_run`.
+- **In the backup file.** Remembered topics are saved and imported with the advertisers.
+
+A list of several hundred topics takes a while: each topic is a page to open, a choice and a way back. If Facebook stops showing the rest of the list the step says how many are left; the ones done are remembered, so the next run carries on from there.
 
 ### Advertiser details (CSV)
 
@@ -191,7 +204,7 @@ The log holds what your own Facebook pages showed: advertiser names, and, when a
 | **Restrict ad data settings** | Ad preferences → Manage info | *Activity from other businesses* (formerly "Activity information from ad partners") → not using this information · *Categories used to reach you* → employer, job title, education and relationship status set to not used, other categories removed · *Ads in other apps* (under "Ads shown outside of Meta") → not showing · *Ads about Meta* → not using your activity · *Social interactions* → Only me, for each Facebook account in its "Select an account" pop-up; accounts of other products listed there (Instagram) are read and reported, not changed. A row that already says so ("Not using this information") is left untouched. |
 | **Clear off-Meta activity history** | Accounts Center → Your information and permissions → Your activity off Meta technologies | **Clear previous activity**. See the note below. |
 | **Disconnect future off-Meta activity** (off by default; Max ticks it) | same page | *Manage future activity* → **Disconnect future activity**. Side effect: "Log in with Facebook" on other sites and apps stops working. See the note below. |
-| **Ad topics: See less** (experimental, off by default) | Ad preferences → Customize ads → Ad topics → See all | Opens each topic and picks **See less**. |
+| **Ad topics: See less** (experimental, off by default) | Ad preferences → Customize ads → Ad topics → See all | Opens each topic and picks **See less**. Handled like the advertiser steps: the list is counted first and a second bar shows how far it is, each topic gets a line in the log and a row in the table, and topics that are done are remembered and skipped by later runs. The pop-up has a "See less" of its own in places (a tab, a filter): a topic only counts as opened once a "See less" turns up that was not there before the topic was clicked. See [Ad topics](#ad-topics). |
 | **Turn off AI features** | Settings → Posts, Stories, Reels, Profile and tagging, Followers and public content | Turns off **Allow comment summaries on your posts** and any other switch on those pages whose label mentions AI. Lists the AI settings that have no switch on the web (see below). |
 
 ### How advertisers are opened
@@ -268,6 +281,7 @@ A setting is never loosened. If a row already shows something stricter than the 
 - A live run of 1.6.0 on the same account showed two faults that the mock pages had not caught, both fixed in 1.6.1: the list-based step ended at 159 of 226 advertisers without saying so, and in "Hide advertisers you have seen" lines of an advertiser's own page were clicked as advertisers. The count of 354 above was inflated by that second fault. The mock pop-up is now built the way the live one is, and the released 1.6.0 fails on it the same way.
 - A live run of 1.6.1 on that account (November 2026) completed both advertiser steps: 240 of 240 list-based advertisers, of which 16 still allowed list use and were switched to "Don't allow" and shown as such by the page afterwards, and 200 advertisers in the "saw ads from" list, 29 of them hidden, each handled once. In that run Facebook did not cut the list short, so the handling of a list that stops showing its remaining advertisers is covered by the mock tests only. "Social interactions in ads" reported a change on every live run up to 1.6.3. The log of 1.6.3 showed why: the setting is kept per account, its pop-up lists the accounts with their current value, and the script took the value shown on the Facebook account for the option to click. The setting itself was already "Only me". Fixed in 1.6.4, which has not been run on a live account yet.
 - A live run of 1.6.2 confirmed that remembered advertisers are skipped: all 240 list-based advertisers, and 197 of the 200 in the "saw ads from" list, in about a minute and a half.
+- A live run of 1.6.4 confirmed the per-account handling of "Social interactions in ads" ("Already set", with what each account shows). In the same run the **Ad topics** step did badly: 8 topics in 45 minutes, 520 not reached. The log did not say why, because that step logged nothing per topic. 1.7.0 reworks it (see above) and logs each topic, each reload and what the pop-up showed when it gets stuck; it has only been run against the mock pages, whose topic pop-up is a guess at the real one.
 - Facebook serves different layouts to different accounts and changes them often. Expect differences, and start with a dry run.
 
 A safety rule that is tested: an option such as "Friends" or "Only me" is only ever clicked inside a dialog, menu or radio group, never elsewhere on the page.
