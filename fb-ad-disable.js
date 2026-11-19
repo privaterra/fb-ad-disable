@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FB Ad Disable & Privacy Hardener
 // @namespace    https://github.com/privaterra/fb-ad-disable
-// @version      1.6.1
+// @version      1.6.2
 // @description  Opt out of advertiser lists, restrict ad data use and tighten Facebook privacy settings from one menu.
 // @license      MIT
 // @homepageURL  https://github.com/privaterra/fb-ad-disable
@@ -32,7 +32,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.6.1';
+  const VERSION = '1.6.2';
   const TAG = '[fb-ad-disable]';
   const KEY = 'fbAdDisableState';
   const MEMORY_KEY = 'fbAdDisableAdvertisers';
@@ -242,6 +242,10 @@
     },
   };
 
+  // A list-based advertiser is known by the address of its page, without the query string: the
+  // number in the address is the advertiser, the rest says how the page is to be shown.
+  const listKey = (key) => String(key).split(/[?#]/)[0].replace(/\/+$/, '') + '/';
+
   // List-based advertisers confirmed disabled in earlier runs: { key: { name, result, at } }.
   const memory = {
     // Versions up to 1.6.0 could file an entry of "Hide advertisers you have seen" under the wrong
@@ -256,7 +260,14 @@
       const entries = Object.entries(m);
       const kept = entries.filter((x) => !misfiled(x));
       memory.dropped = entries.length - kept.length;
-      return memory.dropped ? Object.fromEntries(kept) : m;
+      // Up to 1.6.1 a list-based advertiser's key included the query string of its link.
+      const out = new Map();
+      for (const [key, e] of kept) {
+        const k = key.startsWith('/') ? listKey(key) : key;
+        const had = out.get(k);
+        if (!had || ((e && e.at) || 0) >= ((had && had.at) || 0)) out.set(k, e);
+      }
+      return Object.fromEntries(out);
     },
     save: (m) => durable.set(MEMORY_KEY, m),
   };
@@ -573,16 +584,38 @@
     }
     const label = el.closest('label');
     const input = label && label.querySelector('input');
-    return input ? input.checked : null;
+    if (input) return input.checked;
+    // The control can sit next to the text instead of around it: the only one in the smallest
+    // container around the text is this option's. Two of them means the whole group was reached.
+    for (let p = el.parentElement, i = 0; p && p !== document.body && i < 6; p = p.parentElement, i++) {
+      const found = p.querySelectorAll('[aria-checked],[aria-selected],input[type="radio"],input[type="checkbox"]');
+      if (found.length > 1) break;
+      if (found.length === 1) {
+        const c = found[0];
+        return c.matches('input') ? c.checked : (c.getAttribute('aria-checked') ?? c.getAttribute('aria-selected')) === 'true';
+      }
+    }
+    return null;
   }
 
+  // Selects an option, and reads back what the page then shows:
+  //   - shown as selected before: nothing is clicked;
+  //   - shown as selected after the click, or the pop-up closed: changed;
+  //   - still shown as not selected after the click: changed, with `off` set;
+  //   - the page shows no state at all: changed, with `unread` set, because the script cannot tell
+  //     whether the option was selected already.
+  // With `off` or `unread`, `shown` is what the pop-up looked like, for the log.
   async function choose(needles, mode = 'exact', timeout = 8000) {
-    const el = await waitFor(() => findOption(needles, mode)[0], timeout, `option “${needles[0]}”`);
+    const find = () => findOption(needles, mode)[0];
+    const el = await waitFor(find, timeout, `option “${needles[0]}”`);
     const name = say(el);
     if (checkedState(el) === true) return { status: 'already', detail: name };
     act(el, `select “${name}”`);
     await settle();
-    return { status: 'changed', detail: name };
+    const now = find();
+    const picked = now ? checkedState(now) : null;
+    if (picked === true || !now) return { status: 'changed', detail: name };
+    return { status: 'changed', detail: name, [picked === false ? 'off' : 'unread']: true, shown: snapshot() };
   }
 
   async function confirmIf(needles = t('confirm')) {
@@ -766,11 +799,15 @@
       if (norm(text) === norm(name)) continue; // the page repeats the name under its heading
       if (!lines.includes(text)) lines.push(text);
     }
-    const followers = lines.find((x) => /\d/.test(x) && /\b(followers?|likes?|members?)\b/i.test(x)) || '';
+    // "3,231,099 followers", "1.2M likes": a count and the word, nothing else. A description that
+    // happens to hold a number and "like" or "members" is not a follower count.
+    const followers = lines.find((x) => /^[\d.,\s]*\d[\d.,]*\s?[kmb]?\+?\s+(followers?|likes?|members?)$/i.test(x)) || '';
     const website = lines.find((x) => /^(https?:\/\/|www\.)\S+$/i.test(x)) || '';
     const label = /^(facebook page|instagram( account| profile)?|website|page|profile|learn more)$/i;
     const rest = lines.filter((x) => x !== followers && x !== website && !label.test(x));
-    return { name, category: rest[0] || '', about: rest.slice(1, 3).join(' / '), followers, website };
+    // A category is short ("Retail company"). An advertiser without one starts with its description.
+    const category = rest[0] && rest[0].length <= 70 ? rest[0] : '';
+    return { name, category, about: rest.filter((x) => x !== category).slice(0, 2).join(' / '), followers, website };
   }
 
   // One row of the advertiser table: shown as the run goes, and in the report. The long texts
@@ -947,6 +984,17 @@
       r = await setSwitch(only[0], s.elseToggle);
     }
     if (r.status === 'changed') await confirmIf(s.confirm);
+    if (r.off) { // clicked, and the page still said "not selected": not something to report as done
+      const e = new Error(`“${r.detail}” was clicked, but the page still showed it as not selected`);
+      e.seen = r.shown;
+      throw e;
+    }
+    if (r.unread) {
+      // Without a state to read, every run clicks the option and reports a change. Say so, and keep
+      // what the pop-up looked like in the log: it is what is needed to teach the script to read it.
+      log(`  the page does not show which option is selected; the pop-up showed: ${r.shown}`);
+      return { status: 'changed', detail: `${r.detail} (selected; the page does not show whether it was selected before, so this is reported as a change on every run)` };
+    }
     return r;
   }
 
@@ -1006,14 +1054,15 @@
   async function runLists() {
     const UNIT = 'lists';
     const base = '/ads/audience_based_advertising';
-    const keyOf = (a) => { const u = new URL(a.href, location.origin); return u.pathname + u.search; };
+    const keyOf = (a) => listKey(new URL(a.href, location.origin).pathname);
     const anchors = () => [...document.querySelectorAll('a[href*="/ads/audience_based_advertising/"]')]
       .filter((a) => keyOf(a).replace(/\/+$/, '') !== base);
     const o = state.opts;
-    const done = new Set(state.listsDone || []);
+    const done = new Set((state.listsDone || []).map(listKey)); // a run saved by an earlier version
     const tally = state.listsTally || (state.listsTally = { changed: 0, none: 0, failed: 0, dry: 0, skipped: 0, bare: 0 });
     const prog = state.adv.lists || (state.adv.lists = { done: 0, total: 0, skipped: 0 });
     const ls = state.lists || (state.lists = { way: 'click', ok: 0, bad: 0, at: null, all: [], since: 0 });
+    for (const x of ls.all) x.key = listKey(x.key);
     const known = book;
     const broken = () => findText(t('unavailable'), { mode: 'includes' }).length > 0;
     const NOT_SHOWN = 'Facebook showed “This page isn’t available right now”';
@@ -2034,7 +2083,7 @@
       // The two kinds of key this script writes. Nothing else, so no "__proto__" either.
       if (key.length > 400 || !(key.startsWith('/ads/audience_based_advertising/') || key.startsWith('seen:'))) continue;
       if (!e || typeof e !== 'object' || Array.isArray(e)) continue;
-      out.push([key, {
+      out.push([key.startsWith('/') ? listKey(key) : key, {
         task: key.startsWith('/') ? 'list-based' : 'seen',
         name: short(e.name, 200), result: short(e.result, 80), at: past(e.at), confirmed: e.confirmed !== false,
         category: short(e.category, 200), about: short(e.about, 300), followers: short(e.followers, 80), website: short(e.website, 300),
@@ -2516,6 +2565,7 @@
       ui.showMenu();
     },
     _csv: toCsv, // for the tests
+    _info: advertiserInfo,
     _export: exportData,
     _import: importData,
   };

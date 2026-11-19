@@ -3,6 +3,20 @@
 Notable changes to this project. Versions follow [semantic versioning](https://semver.org/).
 Each release on GitHub carries the section for its version.
 
+## [1.6.2]
+
+On the `dev` branch, not released yet. Small corrections from a live run of 1.6.1, which completed every step: 240 of 240 list-based advertisers (16 switched to "Don't allow") and 200 advertisers in "Hide advertisers you have seen" (29 hidden), each handled once.
+
+### Fixed
+
+- **A choice that the page gives no state for is reported as such.** "Social interactions in ads" said "Changed (Only me)" on every run. The script now reads back what the pop-up shows after selecting an option. When the pop-up shows no state at all it says so in the report, and the log keeps what the pop-up looked like. When the option still shows as not selected after the click, the step is reported for a check by hand instead of as done.
+- The state of an option is also read from a control that sits next to its text, not only around it.
+- **A description is no longer taken for a follower count or a category.** A line such as "…with 7 million+ members…" or "…helping folks like you since 2005" was printed as the follower count; a long description was printed as the category.
+
+### Changed
+
+- **A list-based advertiser is remembered by the address of its page without the query string.** The number in the address is the advertiser; the rest only says how the page is shown. Entries remembered by earlier versions are converted when the database is read.
+
 ## [1.6.1] - 2026-11-18
 
 Fixes for what a live run of 1.6.0 showed.
@@ -80,6 +94,7 @@ Development versions, not published.
 - **1.1.0** - Remembered advertisers, log saving, progress bars with time left, advertiser details as CSV.
 - **1.0.0** - First version: the menu, the advertiser and ad-data tasks, the three privacy levels, dry run and the report.
 
+[1.6.2]: https://github.com/privaterra/fb-ad-disable/compare/v1.6.1...dev
 [1.6.1]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.6.1
 [1.6.0]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.6.0
 [1.5.0]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.5.0
