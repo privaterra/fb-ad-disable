@@ -288,11 +288,38 @@ const pages = {
       }),
       m.el('h3', null, m.span('Other settings')),
       setting('Social interactions', 'Choose who can see your social interactions alongside ads.', null, '', () => {
-        // plainOptions: the choices are plain rows that show no state, so nothing says which one is selected.
-        m.dialog('Social interactions', 'Back', window.__flags.plainOptions
-          ? m.el('div', null, ['Friends', 'Only me'].map((o) => m.el('div', { role: 'button', tabindex: '0', onclick: () => m.rec('set', { id: 'ad_social', value: o }) }, m.span(o))))
-          : window.__flags.slowState ? slowRadios() : m.radios(['Friends', 'Only me'], 'Friends', (o) => m.rec('set', { id: 'ad_social', value: o })));
+        // As on the real site, the setting is kept per account: the pop-up lists the accounts, each
+        // row showing the account's current value, and a row opens that account's choice.
+        // plainOptions and slowState are older shapes of the choice itself, shown without the list:
+        //   plainOptions - the choices are plain rows that show no state at all
+        //   slowState    - the choice is kept, but only shows a moment after the pop-up opens
+        if (window.__flags.plainOptions) {
+          m.dialog('Social interactions', 'Back', m.el('div', null, ['Friends', 'Only me'].map((o) =>
+            m.el('div', { role: 'button', tabindex: '0', onclick: () => m.rec('set', { id: 'ad_social', value: o }) }, m.span(o)))));
+        } else if (window.__flags.slowState) m.dialog('Social interactions', 'Back', slowRadios());
+        else accounts();
       }));
+    // forgetful: a choice is not kept, so the list shows the old value again afterwards.
+    function accounts() {
+      const kept = (product) => sessionStorage.getItem('mock:social:' + product) || 'Friends';
+      const list = m.el('div');
+      const open = (product) => {
+        m.rec('opened', { product });
+        m.dialog('Social interactions', 'Back', m.radios(['Friends', 'Only me'], kept(product), (o) => {
+          if (!window.__flags.forgetful) sessionStorage.setItem('mock:social:' + product, o);
+          m.rec('set', { id: product === 'Facebook' ? 'ad_social' : 'ad_social_' + product.toLowerCase(), value: o });
+          draw();
+        }));
+      };
+      const draw = () => list.replaceChildren(...[['Pat Example', 'Facebook'], ['pat.example', 'Instagram']].map(([name, product]) =>
+        m.el('div', { role: 'button', tabindex: '0', onclick: () => open(product) },
+          m.el('div', null, m.span(name)), m.el('div', null, m.span(product)), m.el('div', null, m.span(kept(product))))));
+      draw();
+      m.dialog('Social interactions', 'Close',
+        m.el('p', null, m.span('We may include your social interactions alongside ads that your friends see.')),
+        m.el('h2', null, m.span('Select an account')), list,
+        m.el('a', { href: '#', onclick: (e) => e.preventDefault() }, m.span('Why am I not seeing all of my accounts?')));
+    }
     // slowState: the choice is kept, but the pop-up opens with nothing selected and only shows the
     // kept choice a moment later, as a pop-up does that fetches its state after opening.
     function slowRadios() {
