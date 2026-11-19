@@ -16,7 +16,7 @@ const LIB = fs.readFileSync(path.join(__dirname, 'mock', 'lib.js'), 'utf8');
 
 // Serves the mock pages on the real Facebook hostnames. `inject` adds the script
 // to every page, the way a userscript manager would.
-async function mockFacebook(context, { inject = false, offMeta = false, listMode = 'ui', listCut = 0, plainOptions = false } = {}) {
+async function mockFacebook(context, { inject = false, offMeta = false, listMode = 'ui', listCut = 0, plainOptions = false, slowState = false } = {}) {
   const events = [];
   await context.exposeFunction('__record', (json) => { events.push(JSON.parse(json)); });
   await context.route('**/*', (route) => route.abort()); // never touch the real internet
@@ -35,7 +35,7 @@ async function mockFacebook(context, { inject = false, offMeta = false, listMode
     return route.fulfill({
       contentType: 'text/html; charset=utf-8',
       body: `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>mock</title></head><body><div id="main"></div>
-        <script>window.__flags = ${JSON.stringify({ offMeta, listMode, listCut, plainOptions })}</script>
+        <script>window.__flags = ${JSON.stringify({ offMeta, listMode, listCut, plainOptions, slowState })}</script>
         <script src="/__mock.js"></script><script>(${page ? page.toString() : '() => {}'})()</script>
         ${inject ? '<script src="/__fbad.js"></script>' : ''}</body></html>`,
     });
@@ -620,6 +620,58 @@ test('advertiser details: a description is not taken for a follower count or a c
   const kept = JSON.parse(values.get('fbAdDisableAdvertisers'));
   assert.ok(Object.keys(kept).every((k) => /^\/ads\/audience_based_advertising\/\d+\/$/.test(k)), 'every key is the address without its query string');
   assert.equal(Object.keys(kept).length, 6);
+  await context.close();
+});
+
+// ---- what the live run of 1.6.2 showed --------------------------------------------------------
+
+// Starts another run from the report of the one before, with the same options.
+async function again(page) {
+  await panel(page).locator('button[name="menu"]').click();
+  await panel(page).locator('button[name="start"]').waitFor();
+  await panel(page).locator('select[name="speed"]').evaluate((sel) => { sel.add(new Option('Test', '20')); sel.value = '20'; });
+  await panel(page).locator('button[name="start"]').click();
+  await panel(page).locator('#step').waitFor(); // the run view, before the next report
+}
+
+test('a pop-up that shows its current choice a moment after opening is not changed again', async () => {
+  const context = await browser.newContext();
+  const events = await mockFacebook(context, { inject: true, slowState: true });
+  await fakeUserscriptApi(context);
+  const page = await context.newPage();
+  await page.goto('https://www.facebook.com/settings/');
+  await page.evaluate(() => window.__openMenu());
+  await configureAndStart(page, { tasks: ['adsettings'], options: { saveLog: true } });
+  let r = await report(page);
+  assert.equal(r.ad_social.status, 'changed');
+  const log = (await saved(page, 'savelog')).text;
+  // The step's own line is in the log for every step, also the first, which starts with a page load.
+  assert.match(log, /\d\d:\d\d:\d\d 1\/5 Activity from other businesses \(ad partners\)\n/);
+  assert.match(log, /\d\d:\d\d:\d\d 5\/5 Social interactions in ads\n/);
+  assert.match(log, /before the change the pop-up showed: pop-up on .*radio on “Friends.*radio off “Only me/);
+
+  await again(page);
+  r = await report(page);
+  assert.equal(r.ad_social.status, 'already', 'the kept choice is read once the pop-up shows it');
+  assert.equal(events.filter((e) => e.type === 'set' && e.id === 'ad_social').length, 1, 'clicked in the first run only');
+  await context.close();
+});
+
+test('a setting that the last run changed to the same value is pointed out', async () => {
+  const context = await browser.newContext();
+  // The mock's "Social interactions" does not keep the choice: it opens on "Friends" every time.
+  await mockFacebook(context, { inject: true });
+  await fakeUserscriptApi(context);
+  const page = await context.newPage();
+  await page.goto('https://www.facebook.com/settings/');
+  await page.evaluate(() => window.__openMenu());
+  await configureAndStart(page, { tasks: ['adsettings'] });
+  let r = await report(page);
+  assert.match(r.ad_social.text, /Changed: Only me$/);
+  await again(page);
+  r = await report(page);
+  assert.equal(r.ad_social.status, 'changed');
+  assert.match(r.ad_social.text, /Only me\. The last run reported this same change: the choice may not be staying, or the page does not show it\. Check it by hand$/);
   await context.close();
 });
 
