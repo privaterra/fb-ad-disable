@@ -162,7 +162,13 @@ The **Ad topics: See less** task works through the topic list the way the advert
 - **In the report.** The report has an **Ad topics** table, with **Export topics CSV** and **Copy topics CSV**. The file is separate from the advertiser file and has these columns: `name`, `result`, `action`, `remembered`, `error`, `processed_at`, `dry_run`.
 - **In the backup file.** Remembered topics are saved and imported with the advertisers.
 
-A list of several hundred topics takes a while: each topic is a page to open, a choice and a way back. If Facebook stops showing the rest of the list the step says how many are left; the ones done are remembered, so the next run carries on from there.
+What the pop-up holds, as seen in a live run:
+
+- **Topics.** Each opens a page with "No preference" and "See less". The page shows which is selected, so a topic that is already "See less" is left as it is.
+- **A row called "See less".** It is not a topic: it leads to the topics already set to "See less". The script never opens it.
+- **"Special topics".** It opens a page of several topics, each with a "See less" of its own. The script opens it, clicks nothing there and reports it as not handled: set those by hand. The log keeps what that page showed.
+
+If Facebook stops showing the rest of the list, or answers with a blank page after a reload, the step says what was done and that the rest was not reached; the topics done are remembered, so the next run carries on from there.
 
 ### Advertiser details (CSV)
 
@@ -281,7 +287,8 @@ A setting is never loosened. If a row already shows something stricter than the 
 - A live run of 1.6.0 on the same account showed two faults that the mock pages had not caught, both fixed in 1.6.1: the list-based step ended at 159 of 226 advertisers without saying so, and in "Hide advertisers you have seen" lines of an advertiser's own page were clicked as advertisers. The count of 354 above was inflated by that second fault. The mock pop-up is now built the way the live one is, and the released 1.6.0 fails on it the same way.
 - A live run of 1.6.1 on that account (November 2026) completed both advertiser steps: 240 of 240 list-based advertisers, of which 16 still allowed list use and were switched to "Don't allow" and shown as such by the page afterwards, and 200 advertisers in the "saw ads from" list, 29 of them hidden, each handled once. In that run Facebook did not cut the list short, so the handling of a list that stops showing its remaining advertisers is covered by the mock tests only. "Social interactions in ads" reported a change on every live run up to 1.6.3. The log of 1.6.3 showed why: the setting is kept per account, its pop-up lists the accounts with their current value, and the script took the value shown on the Facebook account for the option to click. The setting itself was already "Only me". Fixed in 1.6.4, which has not been run on a live account yet.
 - A live run of 1.6.2 confirmed that remembered advertisers are skipped: all 240 list-based advertisers, and 197 of the 200 in the "saw ads from" list, in about a minute and a half.
-- A live run of 1.6.4 confirmed the per-account handling of "Social interactions in ads" ("Already set", with what each account shows). In the same run the **Ad topics** step did badly: 8 topics in 45 minutes, 520 not reached. The log did not say why, because that step logged nothing per topic. 1.7.0 reworks it (see above) and logs each topic, each reload and what the pop-up showed when it gets stuck; it has only been run against the mock pages, whose topic pop-up is a guess at the real one.
+- A live run of 1.6.4 confirmed the per-account handling of "Social interactions in ads" ("Already set", with what each account shows). In the same run the **Ad topics** step did badly: 8 topics in 45 minutes, 520 not reached. The log did not say why, because that step logged nothing per topic. 1.7.0 reworked it and logs each topic.
+- A live run of 1.7.0 showed the Ad topics pop-up for the first time. Topics were opened and set correctly, and one already set was recognised. But the step took the row "See less" (the topics already done) for a topic and opened 384 of them before Facebook stopped answering. 1.7.1 leaves that row and "Special topics" alone. The mock pop-up is rebuilt from that log; 1.7.1 itself has not been run on a live account yet.
 - Facebook serves different layouts to different accounts and changes them often. Expect differences, and start with a dry run.
 
 A safety rule that is tested: an option such as "Friends" or "Only me" is only ever clicked inside a dialog, menu or radio group, never elsewhere on the page.

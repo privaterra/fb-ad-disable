@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FB Ad Disable & Privacy Hardener
 // @namespace    https://github.com/privaterra/fb-ad-disable
-// @version      1.7.0
+// @version      1.7.1
 // @description  Opt out of advertiser lists, restrict ad data use and tighten Facebook privacy settings from one menu.
 // @license      MIT
 // @homepageURL  https://github.com/privaterra/fb-ad-disable
@@ -32,7 +32,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.7.0';
+  const VERSION = '1.7.1';
   const TAG = '[fb-ad-disable]';
   const KEY = 'fbAdDisableState';
   const MEMORY_KEY = 'fbAdDisableAdvertisers';
@@ -1494,11 +1494,18 @@
       // A pop-up whose entries are plain buttons or links.
       return [...scope().querySelectorAll('[role="button"],[role="link"],a[href],[tabindex="0"]')].filter((el) => {
         const text = norm(el.textContent);
-        return visible(el) && text.length > 1 && text.length < 120 && !skip.includes(text) && !skip.includes(norm(el.getAttribute('aria-label')));
+        return visible(el) && text.length > 1 && text.length < 120 && !skip.includes(text) && !skip.includes(norm(el.getAttribute('aria-label'))) &&
+          !skip.includes(norm(firstText(el))); // "See less · 919 topics" is not a topic either
       });
     });
     // An entry is known by its name: its status line ("You hid their ads") changes as the run goes.
     const keyOf = (el) => norm(firstText(el));
+    // The heading a person sees at the top of what is in front. The list this step works on has one;
+    // another list with another heading is another page, even when it shows some of the same names.
+    const headNow = () => {
+      const head = [...scope().querySelectorAll('h1,h2,[role="heading"]')].find((el) => norm(el.textContent) && shown(el));
+      return head ? norm(head.textContent).slice(0, 80) : '';
+    };
     const done = new Set(state[doneKey] || []);
     const names = new Set(state[doneKey + 'Names'] || []); // every entry the list has shown
     const count = state[doneKey + 'Count'] || (state[doneKey + 'Count'] = { changed: 0, dry: 0, same: 0, failed: 0, unsure: 0, known: 0 });
@@ -1514,6 +1521,8 @@
       const front = all().filter((el) => (!names.size || names.has(keyOf(el))) && shown(el));
       if (new Set(front.map(keyOf)).size < Math.min(2, names.size || 1)) return null;
       if (panel && panel()) return null;
+      const head = state[doneKey + 'Head'];
+      if (head) { const now = headNow(); if (now && now !== head) return null; } // another page's list
       let box = front[0].parentElement;
       for (const el of front) while (box && !box.contains(el)) box = box.parentElement;
       return box;
@@ -1572,6 +1581,7 @@
     };
 
     await waitFor(() => { fresh(); return all().length; }, 8000, 'a list on this page');
+    if (state[doneKey + 'Head'] === undefined) state[doneKey + 'Head'] = headNow();
     // More entries: a "See more" in the pop-up, or the end of a list that loads as it scrolls.
     // Keeps going while the list grows, until `until()` is true or nothing more comes.
     const load = async (until) => {
@@ -1661,7 +1671,11 @@
             outcome = 'failed';
             error = e.message;
             fails++;
-            if (!seen) { seen = snapshot(); state[doneKey + 'Seen'] = seen; }
+            const shot = snapshot();
+            if (!seen) { seen = shot; state[doneKey + 'Seen'] = seen; }
+            // In the log once for each kind of failure: it is what shows how the page differs from what was expected.
+            const kinds = state[doneKey + 'Kinds'] || (state[doneKey + 'Kinds'] = []);
+            if (!kinds.includes(error) && kinds.length < 6) { kinds.push(error); log(`  “${name}” ${error}. The page showed: ${shot}`); }
           }
         }
         await backToList();
@@ -1815,7 +1829,24 @@
     if (tab) { click(tab); await settle(); }
     const find = () => findText(['ad topics'])[0] || findText(['ad topics'], { mode: 'includes' })[0];
     const label = await waitFor(find, 10000).catch(() => null);
-    if (!label) throw new RowMissing('could not find the “Ad topics” section');
+    const same = (c) => (c.same ? `, ${c.same} already “See less”` : '') + (c.known ? `, ${c.known} skipped as remembered` : '');
+    const words = {
+      dry: (c) => `${c.dry} topics would be set to “See less”${same(c)}`,
+      done: (c) => `${c.changed} topics set to “See less”${same(c)}`,
+    };
+    if (!label) {
+      // After a page load in the middle of the step, Facebook can answer with a page that stays
+      // blank. What was done before that still counts, and is said.
+      const c = state.topicsDoneCount;
+      if (!c || !(state.topicsDone || []).length) throw new RowMissing('could not find the “Ad topics” section');
+      const blank = (document.body.innerText || '').trim().length < 30;
+      return {
+        status: 'manual', limited: blank, seen: state.topicsDoneSeen || snapshot(),
+        detail: `${state.opts.dryRun ? words.dry(c) : words.done(c)}${c.failed ? `, ${c.failed} could not be handled` : ''}. ` +
+          `Then ${blank ? 'Facebook showed a blank page' : 'the “Ad topics” section was not found'} after the page was loaded again, ` +
+          `so the rest of the list was not reached. Run this task again${state.opts.remember ? '; the topics done are remembered' : ''}`,
+      };
+    }
     const all = rowButton(label, [...t('seeAll'), 'view and manage topics', 'see all topics']); // "See all" next to it
     await openRow(all || label);
 
@@ -1832,8 +1863,10 @@
       return out;
     };
     let last = Date.now();
-    const same = (c) => (c.same ? `, ${c.same} already “See less”` : '') + (c.known ? `, ${c.known} skipped as remembered` : '');
-    const res = await drillList('topicsDone', async (opt) => {
+    const res = await drillList('topicsDone', async ({ opt, others }) => {
+      // A row such as "Special topics" opens a page of several topics, each with a "See less" of its
+      // own. Which of them is set, and what a click does there, is not known: nothing is clicked.
+      if (others >= 2) throw new Error('opens a group of topics with several “See less” choices: not changed, set it by hand');
       // The option that came up, or the one the page drew in its place.
       const r = await pick(() => (opt.isConnected && visible(opt) ? opt : options()[0] || null));
       if (r.status !== 'changed') return { status: 'already' };
@@ -1842,16 +1875,16 @@
     }, {
       ignore: [...t('seeLess'), 'no preference', 'learn more'],
       probe: () => new Set(options()),
-      ready: (was, name, { inEntry }) => options().find((o) => !was.has(o) && !inEntry(o)) || null,
+      ready: (was, name, { inEntry }) => {
+        const came = options().filter((o) => !was.has(o) && !inEntry(o));
+        return came.length ? { opt: came[0], others: came.length - 1 } : null;
+      },
       // Not opened: a topic remembered as done, or one whose row already says "See less".
       already: (el) => {
         if (pieces(el).slice(1).some((x) => t('seeLess').includes(x))) return true;
         return state.opts.skipKnown && (book.get('topic:' + norm(firstText(el))) || {}).confirmed === true ? 'known' : false;
       },
-      words: {
-        dry: (c) => `${c.dry} topics would be set to “See less”${same(c)}`,
-        done: (c) => `${c.changed} topics set to “See less”${same(c)}`,
-      },
+      words,
       each: (name, outcome, did, total, info, error, confirmed) => {
         prog.done = did;
         prog.total = Math.max(prog.total, total);
@@ -2160,7 +2193,9 @@
         log(`  ${STATUS[res.status].text}${res.detail ? ': ' + res.detail : ''}`);
         if (res.seen) log(`  the page showed: ${res.seen}`);
         // Facebook's "try again later" pages, wherever they turned up in this step.
-        res.limited = res.status !== 'info' && (!!res.limited || LIMITED.test(`${res.detail || ''} ${res.seen || ''}`));
+        // So is a page that stayed blank.
+        res.limited = res.status !== 'info' && (!!res.limited || LIMITED.test(`${res.detail || ''} ${res.seen || ''}`) ||
+          /\| text:\s*\| controls: none/.test(res.seen || ''));
         if (res.limited) log(`  ${LIMIT_NOTE}.`);
         if (!unit.advertisers) { // advertiser steps are timed per advertiser instead
           state.timing.unitMs += Date.now() - (state.unitStart || Date.now());
