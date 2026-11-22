@@ -3,7 +3,7 @@
 Notable changes to this project. Versions follow [semantic versioning](https://semver.org/).
 Each release on GitHub carries the section for its version.
 
-## [1.7.2]
+## [1.7.2] - 2026-11-22
 
 From a live run of 1.7.1. The advertiser steps and the settings went through as before (3 of 229 list-based advertisers were new and were switched off, 5 of 200 advertisers seen were new and were hidden, the rest skipped as remembered). The Ad topics step did nothing, and its log showed the pop-up as it is.
 
@@ -178,7 +178,7 @@ Development versions, not published.
 - **1.1.0** - Remembered advertisers, log saving, progress bars with time left, advertiser details as CSV.
 - **1.0.0** - First version: the menu, the advertiser and ad-data tasks, the three privacy levels, dry run and the report.
 
-[1.7.2]: https://github.com/privaterra/fb-ad-disable/compare/v1.7.1...dev
+[1.7.2]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.7.2
 [1.7.1]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.7.1
 [1.7.0]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.7.0
 [1.6.4]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.6.4
