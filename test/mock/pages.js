@@ -341,7 +341,7 @@ const pages = {
     // What is hard about it:
     //  - "See less" is also the name of a row (and of a tab of the list) that is not a topic: it opens
     //    the topics that are done already. A live run of 1.7.0 went in there and opened 384 of them;
-    //  - "Special topics" opens a page of several topics, each with a "See less" button of its own;
+    //  - "Special topics" opens a page of switches, two of them off and marked "See less";
     //  - a topic set to "See less" leaves the summary, where another takes its place. The list keeps
     //    it, and does not say what a topic is set to; "Gambling" is set already;
     //  - the summary's three topics are in the list too: under the list, covered, lie rows with the
@@ -371,11 +371,28 @@ const pages = {
       } }, m.span(name));
       const nav = (name, note, open) => m.el('div', { role: 'listitem' }, m.el('div', { role: 'button', tabindex: '0', style: 'min-height:24px', onclick: open },
         m.el('div', null, m.span(name)), note ? m.el('div', null, m.span(note)) : null));
+      // "Special topics", as the log of a live run of 1.7.2 showed it: one switch per topic, each in
+      // a label with the topic's name. On is the normal state; off is "See less", and the label then
+      // says so. A click anywhere on a label flips its switch, as it does on the real page: the
+      // words "See less" are not a choice to click.
+      const SPECIAL = ['Liquor, beer & wine', 'Parenting', 'Pets', 'Social Issues, Elections or Politics', 'Gambling', 'Body Weight Control'];
+      const specialOff = () => JSON.parse(sessionStorage.getItem('mock:special') || '["Pets","Social Issues, Elections or Politics"]');
       const special = () => {
+        const row = (name) => {
+          const off = () => specialOff().includes(name);
+          const note = m.el('div', null, m.span(off() ? 'See less' : ''));
+          const sw = m.el('input', { type: 'checkbox', role: 'switch', onchange: () => {
+            sessionStorage.setItem('mock:special', JSON.stringify(sw.checked ? specialOff().filter((x) => x !== name) : [...specialOff(), name]));
+            m.rec('specialset', { name, on: sw.checked });
+            note.firstChild.textContent = off() ? 'See less' : '';
+          } });
+          sw.checked = !off();
+          return m.el('label', { style: 'display:flex;justify-content:space-between;min-height:30px' }, m.el('div', null, m.el('div', null, m.span(name)), note), sw);
+        };
         const page = layer(back(() => page), m.el('h2', null, m.span('Special topics')),
-          ['Alcohol and tobacco', 'Elections', 'Body weight', 'Betting'].map((name) =>
-            m.el('div', { style: 'display:flex;justify-content:space-between' }, m.span(name),
-              m.el('div', { role: 'button', tabindex: '0', 'aria-pressed': 'false', onclick: () => m.rec('decoy', { what: `special topic: See less for ${name}` }) }, m.span('See less')))));
+          m.el('p', null, m.span('You can turn off topics you want to see less of, and we’ll do our best to show you fewer ads about them.')),
+          SPECIAL.map(row),
+          m.el('p', null, m.span('The choice you make here will apply to all the accounts in this Accounts Center.')));
         m.rec('special', {});
         pop.append(page);
       };
