@@ -3,6 +3,19 @@
 Notable changes to this project. Versions follow [semantic versioning](https://semver.org/).
 Each release on GitHub carries the section for its version.
 
+## [1.7.1]
+
+On the `dev` branch, not released yet. From a live run of 1.7.0, whose per-topic log lines showed what the Ad topics pop-up really holds.
+
+### Fixed
+
+- **Ad topics: the step walked into the list of topics that are done already.** The pop-up's list has a row called "See less" that is not a topic: it opens the topics already set to "See less" (919 on the account of the live run). The step took the row for a topic, landed in that list, took it for the list it was working on because it showed some of the same names, and opened 384 topics one by one to find each "already “See less”", in 45 minutes. Now:
+  - a row is left out by its name, not only when its whole text matches, so "See less · 919 topics" is not an entry;
+  - the list a step works on is known by the heading above it as well: another page's list is another list, whatever names it shows.
+- **A row that opens a group of topics is not clicked through.** "Special topics" opens a page of several topics, each with a "See less" of its own. 1.7.0 clicked the first one and reported a failure. What a click does there is not known yet, so nothing in it is clicked; the row is reported as not handled.
+- **What the page showed is in the log for each kind of failure**, once, with the name of the entry. The 1.7.0 log named the failures but not what was on screen.
+- **Work done before a failed page load is reported.** When Facebook answered with a blank page after the step reloaded, the report only said that the "Ad topics" section was not found. It now says what was done up to then, that the rest was not reached, and that a blank page can be rate limiting.
+
 ## [1.7.0] - 2026-11-19
 
 ### Added
@@ -148,6 +161,7 @@ Development versions, not published.
 - **1.1.0** - Remembered advertisers, log saving, progress bars with time left, advertiser details as CSV.
 - **1.0.0** - First version: the menu, the advertiser and ad-data tasks, the three privacy levels, dry run and the report.
 
+[1.7.1]: https://github.com/privaterra/fb-ad-disable/compare/v1.7.0...dev
 [1.7.0]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.7.0
 [1.6.4]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.6.4
 [1.6.3]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.6.3

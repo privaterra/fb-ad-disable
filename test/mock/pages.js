@@ -347,8 +347,24 @@ const pages = {
         m.rec('topic', { name, value: o });
       }));
     } }, m.span(name));
+    // The list also has two rows that are not topics (seen in a live run):
+    //  - "Special topics" opens a page of several topics, each with a "See less" of its own;
+    //  - "See less" opens the list of the topics already set to "See less", newest first. Its page
+    //    has the same title, and shows names that are in the main list too.
+    const special = () => m.dialog('Special topics', 'Back', ['Alcohol and tobacco', 'Elections', 'Body weight', 'Betting'].map((name) =>
+      m.el('div', { style: 'display:flex;justify-content:space-between' }, m.span(name),
+        m.el('div', { role: 'button', tabindex: '0', onclick: () => m.rec('decoy', { what: `special topic: See less for ${name}` }) }, m.span('See less')))));
+    const lessPage = () => {
+      m.rec('decoy', { what: 'opened the list of topics already set to See less' });
+      m.dialog('Ad topics', 'Back', [...lessOf()].reverse().map(topic));
+    };
     const topicsPopup = () => {
-      const list = m.el('div', { style: 'height:120px;overflow:auto' }, TOPICS.map(topic));
+      const nav = (name, note, open) => m.el('div', { role: 'button', tabindex: '0', style: 'height:24px', onclick: open },
+        m.el('span', null, m.span(name)), note ? m.el('span', null, m.span(' ' + note)) : null);
+      const rows = TOPICS.map(topic);
+      rows.splice(1, 0, nav('Special topics', '', special));
+      rows.splice(5, 0, nav('See less', `${lessOf().length} topics`, lessPage));
+      const list = m.el('div', { style: 'height:120px;overflow:auto' }, rows);
       m.dialog('Ad topics', 'Back',
         m.el('div', { style: 'display:flex;gap:8px' },
           m.el('div', { role: 'button', tabindex: '0', onclick: () => m.rec('decoy', { what: 'tab: All topics' }) }, m.span('All topics')),
