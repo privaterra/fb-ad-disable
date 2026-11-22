@@ -3,7 +3,7 @@
 Notable changes to this project. Versions follow [semantic versioning](https://semver.org/).
 Each release on GitHub carries the section for its version.
 
-## [1.8.0]
+## [1.8.0] - 2026-11-22
 
 From a live run of 1.7.2, in which the Ad topics step worked for the first time: it opened "View and manage topics", found 67 topics, set 64 to "See less" in under eight minutes and skipped 3 as remembered, with no failure. The same log showed the page of "Special topics": six switches.
 
@@ -194,7 +194,7 @@ Development versions, not published.
 - **1.1.0** - Remembered advertisers, log saving, progress bars with time left, advertiser details as CSV.
 - **1.0.0** - First version: the menu, the advertiser and ad-data tasks, the three privacy levels, dry run and the report.
 
-[1.8.0]: https://github.com/privaterra/fb-ad-disable/compare/v1.7.2...dev
+[1.8.0]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.8.0
 [1.7.2]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.7.2
 [1.7.1]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.7.1
 [1.7.0]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.7.0
