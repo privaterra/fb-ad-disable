@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FB Ad Disable & Privacy Hardener
 // @namespace    https://github.com/privaterra/fb-ad-disable
-// @version      1.7.1
+// @version      1.7.2
 // @description  Opt out of advertiser lists, restrict ad data use and tighten Facebook privacy settings from one menu.
 // @license      MIT
 // @homepageURL  https://github.com/privaterra/fb-ad-disable
@@ -32,7 +32,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.7.1';
+  const VERSION = '1.7.2';
   const TAG = '[fb-ad-disable]';
   const KEY = 'fbAdDisableState';
   const MEMORY_KEY = 'fbAdDisableAdvertisers';
@@ -414,6 +414,27 @@
   // The same test for a control or a row: is it what a person would see and click there, or is it
   // covered by something drawn over it? Facebook leaves covered pages of a pop-up in the document.
   const shown = (el) => visible(el) && inFront(el.closest('[role="button"],button,a,[role="link"]') || el);
+  // Not in view because the area it sits in was scrolled, which is not the same as covered: part of
+  // it lies outside what its scrolling areas (and the window) show.
+  // `cache` (a Map) saves working out the same area again for the next element in it.
+  const scrolledOut = (el, cache) => {
+    if (!visible(el)) return false;
+    const area = (p) => {
+      if (!p || p === document.documentElement) return [0, innerHeight];
+      if (cache && cache.has(p)) return cache.get(p);
+      let [top, bottom] = area(p.parentElement);
+      if (/auto|scroll|hidden|overlay|clip/.test(getComputedStyle(p).overflowY)) {
+        const a = p.getBoundingClientRect();
+        top = Math.max(top, a.top);
+        bottom = Math.min(bottom, a.bottom);
+      }
+      if (cache) cache.set(p, [top, bottom]);
+      return [top, bottom];
+    };
+    const r = el.getBoundingClientRect();
+    const [top, bottom] = area(el.parentElement);
+    return r.top < top - 1 || r.bottom > bottom + 1;
+  };
 
   function searchText(root, needles, mode) {
     const out = [];
@@ -1113,7 +1134,9 @@
 
   // What is on screen when a step fails, for the log: enough to correct a label, with
   // email addresses and long numbers removed.
-  function snapshot() {
+  // `front`: only what a person sees there now (or would after scrolling), not the covered pages
+  // of a pop-up: under an opened entry lies its whole list, which would fill the snapshot.
+  function snapshot(front) {
     const layer = topLayer();
     const root = layer || document.querySelector('[role="main"]') || document.body;
     const KIND = '[role]:not([role="main"]):not([role="dialog"]):not([role="none"]):not([role="presentation"]),a,button,h1,h2,h3,h4,label';
@@ -1123,10 +1146,12 @@
       const el = n.parentElement;
       const text = clip(n.nodeValue, 70);
       if (text.length < 3 || !el || /^(SCRIPT|STYLE|NOSCRIPT)$/.test(el.tagName) || !visible(el)) continue;
+      if (front && !shown(el) && !scrolledOut(el, front)) continue;
       const holder = el.closest(KIND);
       const kind = holder ? `‹${holder.getAttribute('role') || holder.tagName.toLowerCase()}›` : '';
       if (!texts.some((x) => x.startsWith(text))) texts.push(text + kind);
     }
+    if (front && texts.length < 3) return snapshot(); // nothing passes for "in front": show everything
     const named = [...root.querySelectorAll('[role="button"][aria-label],button[aria-label],a[aria-label]')].filter(visible).slice(0, 8)
       .map((el) => `button “${clip(el.getAttribute('aria-label'), 30)}”`);
     const controls = [...root.querySelectorAll('[role="radio"],[role="menuitemradio"],[role="switch"],[role="checkbox"],input[type="checkbox"],input[type="radio"]')]
@@ -1470,13 +1495,14 @@
   //   already() - true for an entry that needs no visit
   //   ready()   - what shows that the page of an opened entry is in front (its control), or null.
   //               With it, an entry only counts as opened once that is seen.
+  //   reopen()  - opens the list again from the page it is reached from, when "Back" went past it.
   //
   // Facebook draws the page of an opened entry over the list, inside the same pop-up, and leaves
   // the covered list in the document. The opened page has list items of its own ("Facebook Page",
   // "Website", the line with "Unhide"…), some with a button that does harm when clicked. So what
   // an entry is gets decided the way a person would: only rows that sit with the rows in front,
   // and only while those are in front. Nothing else in the pop-up is ever clicked as an entry.
-  async function drillList(doneKey, action, { words, each = () => {}, ignore = [], already, panel, probe, ready } = {}) {
+  async function drillList(doneKey, action, { words, each = () => {}, ignore = [], already, panel, probe, ready, reopen } = {}) {
     const scope = () => topLayer() || document.body;
     const skip = [...t('back'), ...t('close'), ...t('seeAll'), ...t('seeMore'), ...t('confirm'), ...ignore];
     // A long list is looked at many times in a row. What was found is kept for a moment, and thrown
@@ -1488,23 +1514,38 @@
       return memo[what];
     };
     const fresh = () => { memo = { at: 0 }; };
+    // What the entries are made of, list items or plain buttons, is settled on the first look at the
+    // list and kept: a covered page of the same pop-up can hold the other kind.
+    let kind = '', lastKind = '';
     const all = () => kept('all', () => {
-      const list = [...scope().querySelectorAll('[role="listitem"],[role="row"]')].filter((el) => visible(el) && norm(el.textContent));
-      if (list.length || !topLayer()) return list;
+      // A row the caller names is not an entry ("See less · 919 topics" is not a topic).
+      const items = [...scope().querySelectorAll('[role="listitem"],[role="row"]')].filter((el) => visible(el) && norm(el.textContent) &&
+        !ignore.includes(norm(firstText(el))));
+      lastKind = kind || (!topLayer() || items.some((el) => shown(el) || scrolledOut(el)) ? 'items' : 'buttons');
+      if (lastKind === 'items') return items;
       // A pop-up whose entries are plain buttons or links.
       return [...scope().querySelectorAll('[role="button"],[role="link"],a[href],[tabindex="0"]')].filter((el) => {
         const text = norm(el.textContent);
         return visible(el) && text.length > 1 && text.length < 120 && !skip.includes(text) && !skip.includes(norm(el.getAttribute('aria-label'))) &&
-          !skip.includes(norm(firstText(el))); // "See less · 919 topics" is not a topic either
+          !skip.includes(norm(firstText(el)));
       });
     });
     // An entry is known by its name: its status line ("You hid their ads") changes as the run goes.
     const keyOf = (el) => norm(firstText(el));
     // The heading a person sees at the top of what is in front. The list this step works on has one;
     // another list with another heading is another page, even when it shows some of the same names.
-    const headNow = () => {
-      const head = [...scope().querySelectorAll('h1,h2,[role="heading"]')].find((el) => norm(el.textContent) && shown(el));
-      return head ? norm(head.textContent).slice(0, 80) : '';
+    const headings = () => [...scope().querySelectorAll('h1,h2,[role="heading"]')].filter((el) => norm(el.textContent) && visible(el));
+    const headText = (el) => norm(el.textContent).slice(0, 80);
+    const headNow = () => { const el = headings().find(shown); return el ? headText(el) : ''; };
+    // The heading of the list, as it was when this page load first showed the list. Not kept across
+    // page loads: the list is found afresh after each.
+    let head = '';
+    // Another page is in front: it shows a heading, and the list's own is covered. A heading that
+    // was merely scrolled out of view with the list is still there (a live run of 1.7.1 lost its
+    // list that way).
+    const elsewhere = () => {
+      if (!head || headings().some((el) => headText(el) === head && (shown(el) || scrolledOut(el)))) return false;
+      return !!headNow();
     };
     const done = new Set(state[doneKey] || []);
     const names = new Set(state[doneKey + 'Names'] || []); // every entry the list has shown
@@ -1516,21 +1557,26 @@
 
     // The element that holds the list's rows, while the list is what is in front; null otherwise.
     // Two rows known to be entries (any row, on the first look) must be in front: an opened page
-    // shows one known name at most, the entry's own. And no opened page may be in front.
+    // shows one known name at most, the entry's own. One row is enough when it is still to do and is
+    // not the entry being handled: that cannot be an opened entry's page, and a list that loses the
+    // entries that are done ends with a single row. And no opened page may be in front.
+    let current = '';
     const listBox = () => kept('box', () => {
       const front = all().filter((el) => (!names.size || names.has(keyOf(el))) && shown(el));
-      if (new Set(front.map(keyOf)).size < Math.min(2, names.size || 1)) return null;
+      const keys = new Set(front.map(keyOf));
+      if (keys.size < Math.min(2, names.size || 1) && ![...keys].some((k) => names.size && k !== current && !done.has(k))) return null;
       if (panel && panel()) return null;
-      const head = state[doneKey + 'Head'];
-      if (head) { const now = headNow(); if (now && now !== head) return null; } // another page's list
+      if (elsewhere()) return null; // another page's list
       let box = front[0].parentElement;
       for (const el of front) while (box && !box.contains(el)) box = box.parentElement;
       return box;
     });
     // In a long list, the one container that holds most of what is listed: the list itself. Tabs,
     // filters and other buttons of the pop-up sit outside it and are not entries.
+    // Rows of a page that lies covered under the one in front are not counted.
     const listRoot = () => kept('root', () => {
-      const items = all();
+      const areas = new Map();
+      const items = all().filter((el) => shown(el) || scrolledOut(el, areas));
       if (items.length < 12) return null;
       const tally = new Map();
       for (const el of items) for (let p = el.parentElement, d = 0; p && d < 8; p = p.parentElement, d++) tally.set(p, (tally.get(p) || 0) + 1);
@@ -1546,10 +1592,41 @@
     const entries = () => (listBox() ? all().filter((el) => names.has(keyOf(el)) && inRoot(el)) : []);
     const inEntry = (el) => all().some((item) => names.has(keyOf(item)) && item.contains(el));
     const listShowing = () => !!listBox();
+    // The list can be in front and yet show none of its rows: it was scrolled to a part without any.
+    // A row that is out of view, not covered, is scrolled back in before the list is taken for gone.
+    const bring = () => {
+      if (listBox()) return true;
+      const row = all().find((el) => (!names.size || names.has(keyOf(el))) && !shown(el) && scrolledOut(el));
+      if (!row) return false;
+      try { row.scrollIntoView({ block: 'center' }); } catch (e) { /* ignore */ }
+      fresh();
+      return !!listBox();
+    };
     const learn = () => {
-      for (const el of rows()) names.add(keyOf(el));
+      const list = rows();
+      for (const el of list) names.add(keyOf(el));
+      if (list.length) {
+        if (!kind) kind = lastKind;
+        if (!head) head = headNow();
+      }
       state[doneKey + 'Names'] = [...names];
       return names.size;
+    };
+    // The next entry to open: the first one, in the list's order, that a person could click, scrolled
+    // into view when it is not. A row with the same name on a covered page of the pop-up stays
+    // covered whatever is scrolled: it is passed over, and only taken when nothing else is left.
+    const covered = new WeakSet();
+    const next = async () => {
+      const open = entries().filter((x) => !done.has(keyOf(x)));
+      for (const el of open) {
+        if (covered.has(el)) continue;
+        if (shown(el)) return el;
+        try { el.scrollIntoView({ block: 'center' }); } catch (e) { /* ignore */ }
+        if (await waitFor(() => shown(el), 500, 'the row', 50).catch(() => false)) { fresh(); return el; }
+        covered.add(el);
+      }
+      fresh();
+      return open[0];
     };
     // Close whatever is in front of the list: the Back button of the page in front, one press at a
     // time, giving a page that closes slowly the time to go before pressing anything else.
@@ -1559,7 +1636,7 @@
         if (await waitFor(listShowing, i ? 3000 : 1000).catch(() => false)) break;
         const backs = findLabel(t('back'), scope());
         const btn = backs.filter(shown).pop() || backs.pop() || findLabel(t('back')).pop();
-        if (!btn) break;
+        if (!btn) { bring(); break; }
         click(btn);
         await settle();
         fresh();
@@ -1576,12 +1653,11 @@
         await save();
         throw new Renav(why, done.size);
       }
-      log(`  ${why} (${done.size} of ${names.size} done). The pop-up showed: ${snapshot()}`);
+      log(`  ${why} (${done.size} of ${names.size} done). The pop-up showed: ${snapshot(new Map())}`);
       note = left;
     };
 
-    await waitFor(() => { fresh(); return all().length; }, 8000, 'a list on this page');
-    if (state[doneKey + 'Head'] === undefined) state[doneKey + 'Head'] = headNow();
+    await waitFor(() => { fresh(); return all().some(shown) || (bring() && all().some(shown)); }, 8000, 'a list on this page');
     // More entries: a "See more" in the pop-up, or the end of a list that loads as it scrolls.
     // Keeps going while the list grows, until `until()` is true or nothing more comes.
     const load = async (until) => {
@@ -1590,7 +1666,7 @@
       for (let i = 0, stale = 0; i < 120 && stale < 2 && Date.now() - started < 240000; i++) {
         check();
         fresh();
-        if (until() || !listShowing()) break;
+        if (until() || !bring()) break;
         const before = all().length, known = names.size;
         const btns = searchText(scope(), [...t('seeMore'), ...t('seeAll')], 'exact').filter(shown);
         if (btns.length) { btns.forEach(click); await settle(); fresh(); }
@@ -1615,12 +1691,16 @@
     while (fails < tolerated() && done.size < 2000) {
       check();
       fresh();
-      if (!listShowing() && !(await backToList())) {
-        await startOver('the list is no longer on screen', ', the list could not be brought back on screen: run this task again');
-        break;
+      if (!bring() && !(await backToList())) {
+        if (names.size && [...names].every((n) => done.has(n))) break; // nothing the list held is left to do
+        const again = reopen && (await reopen()) && (await waitFor(() => { fresh(); return listShowing(); }, 6000).catch(() => false));
+        if (!again) {
+          await startOver('the list is no longer on screen', ', the list could not be brought back on screen: run this task again');
+          break;
+        }
       }
       learn();
-      const el = entries().find((x) => !done.has(keyOf(x)));
+      const el = await next();
       if (!el) {
         if (await more()) continue;
         const missing = names.size - done.size;
@@ -1629,6 +1709,7 @@
       }
       const key = keyOf(el);
       const name = firstText(el);
+      current = key;
       let outcome, info = {}, error = '', confirmed = true;
       const state0 = already ? already(el) : false;
       if (state0 === 'known') { // done in an earlier run and remembered: not opened
@@ -1671,7 +1752,7 @@
             outcome = 'failed';
             error = e.message;
             fails++;
-            const shot = snapshot();
+            const shot = snapshot(new Map());
             if (!seen) { seen = shot; state[doneKey + 'Seen'] = seen; }
             // In the log once for each kind of failure: it is what shows how the page differs from what was expected.
             const kinds = state[doneKey + 'Kinds'] || (state[doneKey + 'Kinds'] = []);
@@ -1681,6 +1762,7 @@
         await backToList();
       }
       done.add(key); // booked once, whatever happens next
+      current = '';
       state[doneKey] = [...done];
       each(name, outcome, done.size, Math.max(names.size, done.size), info, error, confirmed);
       await save();
@@ -1695,7 +1777,8 @@
     const failed = (count.unsure ? `, ${count.unsure} clicked but not shown as changed afterwards` : '') +
       (count.failed ? `, ${count.failed} could not be handled` : '') + note;
     if (state.opts.dryRun) return { status: 'dry', detail: said.dry(count) + failed, seen };
-    return { status: count.changed + count.unsure ? 'changed' : 'already', detail: said.done(count) + failed, seen };
+    // Left unfinished with nothing changed is not "already set": the rest was never looked at.
+    return { status: count.changed + count.unsure ? 'changed' : note ? 'manual' : 'already', detail: said.done(count) + failed, seen };
   }
 
   // "Hide ads" for every advertiser Facebook lists.
@@ -1850,6 +1933,27 @@
     const all = rowButton(label, [...t('seeAll'), 'view and manage topics', 'see all topics']); // "See all" next to it
     await openRow(all || label);
 
+    // The pop-up opens on a summary (seen in a live run of 1.7.1): three topics, "Special topics",
+    // and the topics already chosen. The topics themselves are behind "View and manage topics".
+    const BTN = '[role="button"],button,a,[role="link"]';
+    const button = (words) => searchText(topLayer() || document.body, words, 'exact').map((el) => el.closest(BTN)).filter(Boolean)[0] || null;
+    const inView = async (el) => {
+      if (el && !shown(el)) { try { el.scrollIntoView({ block: 'center' }); } catch (e) { /* ignore */ } await sleep(300); }
+      return !!el && shown(el);
+    };
+    const VIEW = ['view and manage topics', 'view all topics', 'see all topics'];
+    // Only a button a person could click now: the summary stays in the document under the list.
+    const enter = async (wait) => {
+      const btn = await waitFor(() => button(VIEW), wait).catch(() => null);
+      if (!(await inView(btn))) return false;
+      click(btn);
+      await settle();
+      await waitFor(() => { const b = button(VIEW); return !b || !shown(b); }, 8000).catch(() => null);
+      return true;
+    };
+    const summary = await enter(4000);
+    if (summary && !state.topicsEntered) { state.topicsEntered = true; log('  the topics are listed behind “View and manage topics”: opened'); }
+
     const prog = state.adv.topics || (state.adv.topics = { done: 0, total: 0, skipped: 0, noun: 'Topics' });
     ui.advertisers(prog);
     // The "See less" a person would see right now. One can also be part of the list itself (a tab,
@@ -1874,6 +1978,7 @@
       return { status: 'changed' };
     }, {
       ignore: [...t('seeLess'), 'no preference', 'learn more'],
+      reopen: summary ? () => enter(1500) : null,
       probe: () => new Set(options()),
       ready: (was, name, { inEntry }) => {
         const came = options().filter((o) => !was.has(o) && !inEntry(o));
@@ -1906,7 +2011,44 @@
     });
     const known = (state.topicsDoneCount || {}).known || 0;
     if (known) log(`  ${known} topics skipped: remembered from earlier runs`);
+    if (summary) res.detail += await special();
     return res;
+
+    // "Special topics", on the summary, opens a page of several topics with a control each. What a
+    // click does there is not known yet (1.7.0 clicked one and could not read the result), so the
+    // page is only looked at: what it shows goes in the log, and the report says it was left alone.
+    async function special() {
+      const WORDS = ['special topics'];
+      try {
+        for (let i = 0; i < 3 && !(await inView(button(WORDS))); i++) { // back to the summary
+          const back = findLabel(t('back'), topLayer() || document.body).filter(shown).pop();
+          if (!back) break;
+          click(back);
+          await settle();
+        }
+        const row = button(WORDS);
+        if (!(await inView(row))) return '';
+        const was = new Set(options());
+        click(row);
+        await settle();
+        const came = await waitFor(() => { const now = options().filter((o) => !was.has(o)); return now.length ? now : null; }, 5000).catch(() => []);
+        if (!came.length) { log('  “Special topics” was clicked to look at it: nothing new was shown'); return ''; }
+        const controls = came.slice(0, 8).map((o) => {
+          const b = o.closest(BTN + ',[role="radio"],[role="checkbox"],[role="switch"]') || o;
+          const attrs = ['aria-pressed', 'aria-checked', 'aria-selected', 'aria-disabled'].filter((a) => b.hasAttribute(a))
+            .map((a) => `${a.slice(5)}=${b.getAttribute(a)}`).join(' ');
+          return `${b.getAttribute('role') || b.tagName.toLowerCase()}${attrs ? ' ' + attrs : ''}`;
+        });
+        log(`  “Special topics” was opened to look at it; nothing in it was clicked. ${came.length} “See less” controls (${controls.join(', ')}). ` +
+          `The page showed: ${snapshot(new Map())}`);
+        const back = findLabel(t('back'), topLayer() || document.body).filter(shown).pop();
+        if (back) { click(back); await settle(); }
+        return `. “Special topics” (${came.length} choices) is not changed by this script: set it by hand`;
+      } catch (e) {
+        if (e instanceof Abort) throw e;
+        return '';
+      }
+    }
   }
 
   // Finds a row, walking down the Accounts Center menus to it when it is not on screen yet.
@@ -2089,7 +2231,7 @@
       manual: 'Click “Hide ads” next to each advertiser.', run: runSeen });
     if (on('adsettings')) for (const s of AD_SETTINGS) units.push(setting(s, s.all));
     if (on('topics')) units.push({ id: 'topics', advertisers: true, noun: 'topics', title: 'Ad topics: See less', url: ADS,
-      manual: 'On the “Customize ads” tab, click “See all” next to “Ad topics”, then choose “See less” for each topic.', run: runTopics });
+      manual: 'On the “Customize ads” tab, click “See all” next to “Ad topics”, then “View and manage topics”, and choose “See less” for each topic.', run: runTopics });
     const gone = 'Facebook does not offer this on your account. Meta is replacing it with “Activity from other businesses”, which the ad data task sets';
     const offPath = 'Accounts Center → Your information and permissions → Your activity off Meta technologies (or “Activity from other businesses”)';
     if (on('offclear')) units.push({ id: 'offclear', title: 'Clear off-Meta activity history', optional: true, gone, ...where('offclear', offMeta),

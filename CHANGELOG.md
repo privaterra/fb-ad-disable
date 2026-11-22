@@ -3,6 +3,23 @@
 Notable changes to this project. Versions follow [semantic versioning](https://semver.org/).
 Each release on GitHub carries the section for its version.
 
+## [1.7.2] - 2026-11-22
+
+From a live run of 1.7.1. The advertiser steps and the settings went through as before (3 of 229 list-based advertisers were new and were switched off, 5 of 200 advertisers seen were new and were hidden, the rest skipped as remembered). The Ad topics step did nothing, and its log showed the pop-up as it is.
+
+### Fixed
+
+- **Ad topics: the step lost its list and did nothing.** 1.7.1 knew the list by the heading above it. Counting the list scrolls to its last row, the heading went out of view, and the list was taken for another page: three page loads, no topic opened. Now a heading that was scrolled out of view with its list still counts; only a heading that is covered by another page does not. The same goes for the rows: a list that was scrolled to a part without rows is scrolled back before it is given up.
+- **Ad topics: the topics are behind "View and manage topics".** The pop-up opens on a summary: three topics, "Special topics", and the topics already chosen. The step worked on those few rows. It now opens "View and manage topics" and works through the list there, and opens it again if "Back" went past it. Where the pop-up has no such button, the rows of the summary are used as before.
+- **"See less · … and others" on the summary is not a topic.** 1.7.1 left that row out only where entries are plain buttons; on the summary they are list items.
+- **A list down to its last row is still the list.** Two known rows had to be in view; a list that loses the entries that are done ends with one. One row is enough when it is still to do.
+- **A step that could not reach its list is not reported as "Already set".** With nothing changed and the list not worked through, the report now says "Needs manual check".
+
+### Changed
+
+- **"Special topics" is looked at, not changed.** At the end of the step its page is opened, what it shows is written to the log (the controls and their state), and it is closed again. Nothing in it is clicked: what a click does there is not known yet. The report says it was left as it is.
+- **What the page showed, in the log, is the page in front.** A pop-up keeps its covered pages in the document; with a long list under an opened entry, the note showed the list and not the entry.
+
 ## [1.7.1] - 2026-11-22
 
 From a live run of 1.7.0, whose per-topic log lines showed what the Ad topics pop-up really holds.
@@ -161,6 +178,7 @@ Development versions, not published.
 - **1.1.0** - Remembered advertisers, log saving, progress bars with time left, advertiser details as CSV.
 - **1.0.0** - First version: the menu, the advertiser and ad-data tasks, the three privacy levels, dry run and the report.
 
+[1.7.2]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.7.2
 [1.7.1]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.7.1
 [1.7.0]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.7.0
 [1.6.4]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.6.4
