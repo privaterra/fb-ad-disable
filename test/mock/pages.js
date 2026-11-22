@@ -330,47 +330,101 @@ const pages = {
       }, 600);
       return group;
     }
-    // Ad topics: a pop-up with a row of tabs and a long list that scrolls, so only some topics are on
-    // screen. A topic opens its own page with the choice. What is hard about it:
-    //  - one of the tabs is called "See less" too: clicking it instead of a topic's choice changes
-    //    nothing and swaps the list for another one;
-    //  - a row does not say what the topic is set to;
-    //  - "Gambling" is set to "See less" already.
+    // Ad topics, as a live run of 1.7.1 showed it. ONE pop-up holds its pages, drawn over each other;
+    // a covered page stays in the document:
+    //  - a summary: three topics (list items), "View and manage topics", "Special topics", and the
+    //    topics already chosen ("See less · … and others", "Review topic choices"). It is taller than
+    //    the pop-up, so its title scrolls out of view when its last row is scrolled to;
+    //  - the list behind "View and manage topics": the topics not chosen yet, as plain buttons in an
+    //    area that scrolls, under a title that reads like the button that opened it;
+    //  - a topic's page with the choice.
+    // What is hard about it:
+    //  - "See less" is also the name of a row (and of a tab of the list) that is not a topic: it opens
+    //    the topics that are done already. A live run of 1.7.0 went in there and opened 384 of them;
+    //  - "Special topics" opens a page of several topics, each with a "See less" button of its own;
+    //  - a topic set to "See less" leaves the summary, where another takes its place. The list keeps
+    //    it, and does not say what a topic is set to; "Gambling" is set already;
+    //  - the summary's three topics are in the list too: under the list, covered, lie rows with the
+    //    same names. Code can click them; a person could not.
     // A choice is kept in this tab, so a second run finds it.
+    // flags.topicsFlat: no "View and manage topics"; the summary's own rows are all there is.
     const TOPICS = ['Alcohol', 'Parenting', 'Pets', 'Gambling', 'Dating', 'Weight loss', 'Politics', 'Tobacco', 'Cryptocurrency',
       'Loans', 'Insurance', 'Fast food', 'Video games', 'Travel'];
     const lessOf = () => JSON.parse(sessionStorage.getItem('mock:topics') || '["Gambling"]');
-    const topic = (name) => m.el('div', { role: 'button', tabindex: '0', style: 'height:24px', onclick: () => {
-      m.rec('topicopened', { name });
-      m.dialog(name, 'Back', m.radios(['No preference', 'See less'], lessOf().includes(name) ? 'See less' : 'No preference', (o) => {
-        sessionStorage.setItem('mock:topics', JSON.stringify(o === 'See less' ? [...new Set([...lessOf(), name])] : lessOf().filter((x) => x !== name)));
-        m.rec('topic', { name, value: o });
-      }));
-    } }, m.span(name));
-    // The list also has two rows that are not topics (seen in a live run):
-    //  - "Special topics" opens a page of several topics, each with a "See less" of its own;
-    //  - "See less" opens the list of the topics already set to "See less", newest first. Its page
-    //    has the same title, and shows names that are in the main list too.
-    const special = () => m.dialog('Special topics', 'Back', ['Alcohol and tobacco', 'Elections', 'Body weight', 'Betting'].map((name) =>
-      m.el('div', { style: 'display:flex;justify-content:space-between' }, m.span(name),
-        m.el('div', { role: 'button', tabindex: '0', onclick: () => m.rec('decoy', { what: `special topic: See less for ${name}` }) }, m.span('See less')))));
-    const lessPage = () => {
-      m.rec('decoy', { what: 'opened the list of topics already set to See less' });
-      m.dialog('Ad topics', 'Back', [...lessOf()].reverse().map(topic));
-    };
     const topicsPopup = () => {
-      const nav = (name, note, open) => m.el('div', { role: 'button', tabindex: '0', style: 'height:24px', onclick: open },
-        m.el('span', null, m.span(name)), note ? m.el('span', null, m.span(' ' + note)) : null);
-      const rows = TOPICS.map(topic);
-      rows.splice(1, 0, nav('Special topics', '', special));
-      rows.splice(5, 0, nav('See less', `${lessOf().length} topics`, lessPage));
-      const list = m.el('div', { style: 'height:120px;overflow:auto' }, rows);
-      m.dialog('Ad topics', 'Back',
-        m.el('div', { style: 'display:flex;gap:8px' },
-          m.el('div', { role: 'button', tabindex: '0', onclick: () => m.rec('decoy', { what: 'tab: All topics' }) }, m.span('All topics')),
-          m.el('div', { role: 'button', tabindex: '0', onclick: () => { m.rec('decoy', { what: 'tab: See less' }); list.replaceChildren(); } }, m.span('See less'))),
-        m.el('div', { role: 'button', tabindex: '0', onclick: () => m.rec('decoy', { what: 'Learn more' }) }, m.span('Learn more')),
-        list);
+      const pop = m.el('div', { role: 'dialog', style: 'position:fixed;top:30px;left:30px;width:440px;height:300px;border:2px solid #888;background:#fff' });
+      const layer = (...content) => m.el('div', { style: 'position:absolute;inset:0;overflow:auto;background:#fff;padding:8px' }, ...content);
+      const back = (page) => m.el('div', { role: 'button', 'aria-label': 'Back', onclick: () => setTimeout(() => page().remove(), 300) }, '←');
+      const draws = [];
+      const topic = (name) => m.el('div', { role: 'button', tabindex: '0', style: 'height:24px', onclick: (ev) => {
+        const r = ev.currentTarget.getBoundingClientRect();
+        const at = document.elementsFromPoint(r.left + r.width / 2, r.top + r.height / 2).find((e) => e.id !== 'fb-ad-disable-panel');
+        if (!at || !ev.currentTarget.contains(at)) m.rec('decoy', { what: `clicked the row of ${name} on a covered page` });
+        m.rec('topicopened', { name });
+        const page = layer(back(() => page), m.el('h2', null, m.span(name)),
+          m.radios(['No preference', 'See less'], lessOf().includes(name) ? 'See less' : 'No preference', (o) => {
+            sessionStorage.setItem('mock:topics', JSON.stringify(o === 'See less' ? [...new Set([...lessOf(), name])] : lessOf().filter((x) => x !== name)));
+            m.rec('topic', { name, value: o });
+            draws.forEach((draw) => draw());
+          }));
+        pop.append(page);
+      } }, m.span(name));
+      const nav = (name, note, open) => m.el('div', { role: 'listitem' }, m.el('div', { role: 'button', tabindex: '0', style: 'min-height:24px', onclick: open },
+        m.el('div', null, m.span(name)), note ? m.el('div', null, m.span(note)) : null));
+      const special = () => {
+        const page = layer(back(() => page), m.el('h2', null, m.span('Special topics')),
+          ['Alcohol and tobacco', 'Elections', 'Body weight', 'Betting'].map((name) =>
+            m.el('div', { style: 'display:flex;justify-content:space-between' }, m.span(name),
+              m.el('div', { role: 'button', tabindex: '0', 'aria-pressed': 'false', onclick: () => m.rec('decoy', { what: `special topic: See less for ${name}` }) }, m.span('See less')))));
+        m.rec('special', {});
+        pop.append(page);
+      };
+      // The topics that are done: the same title as the summary, and names the list shows too.
+      const lessPage = () => {
+        m.rec('decoy', { what: 'opened the list of topics already set to See less' });
+        const page = layer(back(() => page), m.el('h2', null, m.span('Ad topics')), [...lessOf()].reverse().map(topic));
+        pop.append(page);
+      };
+      const manage = () => {
+        const list = m.el('div', { style: 'height:120px;overflow:auto' });
+        draws.push(() => { if (!list.children.length) list.replaceChildren(...TOPICS.map(topic)); });
+        const page = layer(back(() => page), m.el('h2', null, m.span('View and manage topics')),
+          m.el('input', { placeholder: 'Search topics' }),
+          m.el('div', { style: 'display:flex;gap:8px' },
+            m.el('div', { role: 'button', tabindex: '0', onclick: () => m.rec('decoy', { what: 'tab: All topics' }) }, m.span('All topics')),
+            m.el('div', { role: 'button', tabindex: '0', onclick: () => { m.rec('decoy', { what: 'tab: See less' }); list.replaceChildren(); } }, m.span('See less'))),
+          m.el('div', { role: 'button', tabindex: '0', onclick: () => m.rec('decoy', { what: 'Learn more' }) }, m.span('Learn more')),
+          list);
+        m.rec('manage', {});
+        pop.append(page);
+        draws[draws.length - 1]();
+      };
+      const samples = m.el('div');
+      const chosen = m.span('');
+      draws.push(() => {
+        samples.replaceChildren(...TOPICS.filter((x) => !lessOf().includes(x)).slice(0, 3).map((name) => m.el('div', { role: 'listitem' }, topic(name))));
+        chosen.textContent = `${[...lessOf()].reverse().slice(0, 3).join(', ')} and others.`;
+      });
+      draws[0]();
+      const lessRow = nav('See less', '', lessPage);
+      lessRow.querySelector('[role="button"]').append(m.el('div', null, chosen));
+      pop.append(layer(
+        m.el('div', { role: 'button', 'aria-label': 'Close', onclick: () => pop.remove() }, 'x'),
+        m.el('h2', null, m.span('Ad topics')),
+        m.el('p', null, m.span('Manage ad topics and search for what you want to see less of. '),
+          m.el('a', { role: 'link', tabindex: '0', onclick: () => m.rec('decoy', { what: 'Learn more' }) }, m.span('Learn more'))),
+        m.el('div', { style: 'display:flex;justify-content:space-between' }, m.span('Used for 3 accounts'),
+          m.el('div', { role: 'button', tabindex: '0', onclick: () => m.rec('decoy', { what: 'View accounts' }) }, m.span('View'))),
+        m.el('h2', null, m.span('Ad topics advertisers can use to reach you')),
+        m.el('p', null, m.span('Advertisers can reach you based on topics we think you like from your activity.')),
+        samples,
+        window.__flags.topicsFlat ? null : m.button('View and manage topics', manage),
+        nav('Special topics', 'Quickly manage if you want to see ads about special topics.', special),
+        m.el('h2', null, m.span('Your ad topic choices')),
+        m.el('p', null, m.span('Ad topics you’ve chosen to see less of.')),
+        lessRow,
+        m.button('Review topic choices', lessPage)));
+      m.attach(pop);
     };
     const customize = m.el('div', null,
       m.el('div', { style: 'display:flex;justify-content:space-between' }, m.el('h2', null, m.span('Advertisers you saw ads from')),

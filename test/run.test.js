@@ -16,7 +16,7 @@ const LIB = fs.readFileSync(path.join(__dirname, 'mock', 'lib.js'), 'utf8');
 
 // Serves the mock pages on the real Facebook hostnames. `inject` adds the script
 // to every page, the way a userscript manager would.
-async function mockFacebook(context, { inject = false, offMeta = false, listMode = 'ui', listCut = 0, plainOptions = false, slowState = false, forgetful = false } = {}) {
+async function mockFacebook(context, { inject = false, offMeta = false, listMode = 'ui', listCut = 0, plainOptions = false, slowState = false, forgetful = false, topicsFlat = false } = {}) {
   const events = [];
   await context.exposeFunction('__record', (json) => { events.push(JSON.parse(json)); });
   await context.route('**/*', (route) => route.abort()); // never touch the real internet
@@ -35,7 +35,7 @@ async function mockFacebook(context, { inject = false, offMeta = false, listMode
     return route.fulfill({
       contentType: 'text/html; charset=utf-8',
       body: `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>mock</title></head><body><div id="main"></div>
-        <script>window.__flags = ${JSON.stringify({ offMeta, listMode, listCut, plainOptions, slowState, forgetful })}</script>
+        <script>window.__flags = ${JSON.stringify({ offMeta, listMode, listCut, plainOptions, slowState, forgetful, topicsFlat })}</script>
         <script src="/__mock.js"></script><script>(${page ? page.toString() : '() => {}'})()</script>
         ${inject ? '<script src="/__fbad.js"></script>' : ''}</body></html>`,
     });
@@ -384,7 +384,7 @@ test('progress bars, advertiser details CSV, saved log and remembered advertiser
   await context.close();
 });
 
-test('ad topics: "See all" next to the heading, then "See less" for each topic, counted, listed, remembered and exported', async () => {
+test('ad topics: the list behind "View and manage topics", "See less" for each topic, counted, listed, remembered and exported', async () => {
   const context = await browser.newContext();
   const events = await mockFacebook(context, { inject: true });
   const values = await fakeUserscriptApi(context);
@@ -394,53 +394,56 @@ test('ad topics: "See all" next to the heading, then "See less" for each topic, 
   await page.evaluate(() => window.__openMenu());
   await configureAndStart(page, { tasks: ['adsettings', 'topics'], options: { saveLog: true } }); // ad settings first, so the other tab is showing
   // Like the advertiser steps: a second bar with the count, and a table that fills in as the run goes.
-  await p.locator('#advlabel', { hasText: /^Topics: \d+ of 15$/ }).waitFor();
+  await p.locator('#advlabel', { hasText: /^Topics: \d+ of 14$/ }).waitFor();
   await p.locator('#advrows tbody tr', { hasText: 'Alcohol' }).waitFor();
   assert.match(await p.locator('#advrows tbody tr', { hasText: 'Alcohol' }).textContent(), /set to “See less” · remembered/);
   let r = await report(page);
   assert.equal(r.topics.status, 'changed');
-  // "Special topics" is a group with several choices: it is opened, nothing in it is clicked, and it is said.
-  assert.match(r.topics.text, /Changed: 13 topics set to “See less”, 1 already “See less”, 1 could not be handledWhat the page showed/);
+  // "Special topics" is a group with several choices: it is looked at, nothing in it is clicked, and it is said.
+  assert.match(r.topics.text, /Changed: 13 topics set to “See less”, 1 already “See less”\. “Special topics” \(4 choices\) is not changed by this script: set it by hand/);
   const TOPICS = ['Alcohol', 'Cryptocurrency', 'Dating', 'Fast food', 'Gambling', 'Insurance', 'Loans', 'Parenting', 'Pets', 'Politics',
     'Tobacco', 'Travel', 'Video games', 'Weight loss'];
   assert.deepEqual(events.filter((e) => e.type === 'topic').map((e) => `${e.name}:${e.value}`).sort(),
     TOPICS.filter((x) => x !== 'Gambling').map((x) => `${x}:See less`));
-  // The pop-up's own "See less" tab and its other buttons are never taken for a topic or for the choice.
-  // Neither is the row "See less · 1 topics", which leads to the topics that are done already: a live
-  // run of 1.7.0 went in there and opened 384 of them, one by one, to find each already set.
+  // Nothing else in the pop-up is taken for a topic or for the choice: not the "See less" tab of the
+  // list, not the summary's row "See less · … and others" or "Review topic choices" (they lead to the
+  // topics that are done already: a live run of 1.7.0 went in there and opened 384 of them), not a
+  // "See less" of the special topics, and not a row that lies covered under the list.
   assert.deepEqual(events.filter((e) => e.type === 'decoy'), []);
   assert.deepEqual(events.filter((e) => e.type === 'topicopened').map((e) => e.name).sort(), TOPICS, 'each topic is opened once');
+  assert.equal(events.filter((e) => e.type === 'manage').length, 1, '"View and manage topics" is opened once');
+  assert.equal(events.filter((e) => e.type === 'special').length, 1);
   // The ad rows under their current names; the "Ads shown outside of Meta" heading is not mistaken for a row.
   assert.deepEqual(sets(events), { ad_partners: 'off', ad_outside: 'off', ad_about_meta: false, ad_social: 'Only me' });
 
   // One log line per topic, with its result.
   const log = (await saved(page, 'savelog')).text;
-  assert.match(log, /\d\d:\d\d:\d\d   \[ 1\/15\] Alcohol → set to “See less”, remembered\n/);
-  assert.match(log, /\[ ?\d+\/15\] Gambling → already “See less”, remembered\n/);
-  assert.match(log, /\[ 2\/15\] Special topics → failed: opens a group of topics with several “See less” choices: not changed, set it by hand\n/);
-  // What its page showed is in the log, once: that is what a fix would be written from.
-  assert.match(log, /“Special topics” opens a group of topics .* The page showed: pop-up on .*Special topics‹h2›.*Alcohol and tobacco.*See less‹button›/);
+  assert.match(log, /the topics are listed behind “View and manage topics”: opened\n/);
+  assert.match(log, /\d\d:\d\d:\d\d   \[ ?\d+\/14\] Alcohol → set to “See less”, remembered\n/);
+  assert.match(log, /\[ ?\d+\/14\] Gambling → already “See less”, remembered\n/);
+  assert.doesNotMatch(log, /no longer on screen/);
+  // What the page of the special topics showed is in the log: that is what handling it would be written from.
+  assert.match(log, /“Special topics” was opened to look at it; nothing in it was clicked\. 4 “See less” controls \(button pressed=false, .* The page showed: pop-up on .*Special topics‹h2›.*Alcohol and tobacco.*See less‹button›/);
   assert.equal((log.match(/→ set to “See less”, remembered\n/g) || []).length, 13);
 
   // The report lists the topics in a table of their own, with their own CSV.
-  assert.equal(await p.locator('#topics tbody tr').count(), 15);
+  assert.equal(await p.locator('#topics tbody tr').count(), 14);
   assert.equal(await p.locator('#advertisers').count(), 0, 'no advertiser was processed in this run');
   const csv = await saved(page, 'topicscsv');
   assert.match(csv.file, /^fb-ad-disable-topics-[\d-]+\.csv$/);
   const rows = parseCsv(csv.text.replace(/^\uFEFF/, ''));
   assert.deepEqual(Object.keys(rows[0]), ['name', 'result', 'action', 'remembered', 'error', 'processed_at', 'dry_run']);
-  assert.deepEqual(rows.map((x) => x.name).sort(), [...TOPICS, 'Special topics'].sort());
+  assert.deepEqual(rows.map((x) => x.name).sort(), TOPICS);
   assert.deepEqual(rows.find((x) => x.name === 'Pets').result, 'set to “See less”');
   // Remembered next to the advertisers, and in the menu's count.
   const kept = JSON.parse(values.get('fbAdDisableAdvertisers'));
-  assert.equal(Object.keys(kept).filter((k) => k.startsWith('topic:')).length, 15);
-  assert.equal(kept['topic:special topics'].confirmed, false, 'not done: it is tried again next time');
+  assert.equal(Object.keys(kept).filter((k) => k.startsWith('topic:')).length, 14);
   assert.deepEqual([kept['topic:pets'].task, kept['topic:pets'].confirmed], ['topic', true]);
 
   // Second run: the ad rows now say so themselves, and every topic is remembered: none is opened.
   const before = events.length;
   await p.locator('button[name="menu"]').click();
-  assert.match(await p.locator('#saved').textContent(), /^0 advertisers and 15 ad topics in the database, 14 of them done\.$/);
+  assert.match(await p.locator('#saved').textContent(), /^0 advertisers and 14 ad topics in the database, 14 of them done\.$/);
   await configureAndStart(page, { tasks: ['adsettings', 'topics'], options: { saveLog: true } });
   await p.locator('#step').waitFor();
   r = await report(page);
@@ -449,9 +452,33 @@ test('ad topics: "See all" next to the heading, then "See less" for each topic, 
   assert.equal(r.ad_outside.status, 'already');
   assert.equal(r.ad_about_meta.status, 'already');
   assert.equal(r.topics.status, 'already');
-  assert.match(r.topics.text, /Already set: 0 topics set to “See less”, 14 skipped as remembered, 1 could not be handledWhat the page showed/);
+  assert.match(r.topics.text, /Already set: 0 topics set to “See less”, 14 skipped as remembered\. “Special topics” \(4 choices\) is not changed/);
   assert.deepEqual(events.slice(before).filter((e) => ['ad_partners', 'ad_outside', 'ad_about_meta'].includes(e.id) || /^topic/.test(e.type) || e.type === 'decoy'), []);
   assert.match((await saved(page, 'savelog')).text, /14 topics skipped: remembered from earlier runs\n/);
+  await context.close();
+});
+
+test('ad topics without "View and manage topics": the rows of the summary, whose title scrolls out of view', async () => {
+  // What a live run of 1.7.1 did: the list was taken for gone once its last row had been scrolled
+  // to, because the title above it was no longer in view. Nothing was done, and the report said
+  // "Already set".
+  const context = await browser.newContext();
+  const events = await mockFacebook(context, { inject: true, topicsFlat: true });
+  await fakeUserscriptApi(context);
+  const page = await context.newPage();
+  await page.goto('https://accountscenter.facebook.com/ads/');
+  await page.evaluate(() => window.__openMenu());
+  await configureAndStart(page, { tasks: ['topics'], options: { saveLog: true } });
+  const r = await report(page);
+  assert.equal(r.topics.status, 'changed');
+  // The summary shows three topics at a time; one that is set makes room for the next. "Special
+  // topics" is a row here: it opens a group, in which nothing is clicked.
+  assert.match(r.topics.text, /Changed: 13 topics set to “See less”, 1 could not be handledWhat the page showed/);
+  assert.deepEqual(events.filter((e) => e.type === 'decoy'), [], 'the row "See less" is not a topic');
+  assert.equal(events.filter((e) => e.type === 'topic' && e.value === 'See less').length, 13);
+  const log = (await saved(page, 'savelog')).text;
+  assert.doesNotMatch(log, /no longer on screen|View and manage topics”: opened/);
+  assert.match(log, /Special topics → failed: opens a group of topics with several “See less” choices: not changed, set it by hand\n/);
   await context.close();
 });
 
