@@ -399,8 +399,9 @@ test('ad topics: the list behind "View and manage topics", "See less" for each t
   assert.match(await p.locator('#advrows tbody tr', { hasText: 'Alcohol' }).textContent(), /set to “See less” · remembered/);
   let r = await report(page);
   assert.equal(r.topics.status, 'changed');
-  // "Special topics" is a group with several choices: it is looked at, nothing in it is clicked, and it is said.
-  assert.match(r.topics.text, /Changed: 13 topics set to “See less”, 1 already “See less”\. “Special topics” \(4 choices\) is not changed by this script: set it by hand/);
+  // The special topics belong to another task, which is not part of this run: they are looked at,
+  // nothing there is clicked, and the report says how they stand.
+  assert.match(r.topics.text, /Changed: 13 topics set to “See less”, 1 already “See less”\. Special topics: 4 of 6 are not set to “See less” \(Liquor, beer & wine · Parenting · Gambling · Body Weight Control\); the task “Special ad topics” sets them/);
   const TOPICS = ['Alcohol', 'Cryptocurrency', 'Dating', 'Fast food', 'Gambling', 'Insurance', 'Loans', 'Parenting', 'Pets', 'Politics',
     'Tobacco', 'Travel', 'Video games', 'Weight loss'];
   assert.deepEqual(events.filter((e) => e.type === 'topic').map((e) => `${e.name}:${e.value}`).sort(),
@@ -408,8 +409,8 @@ test('ad topics: the list behind "View and manage topics", "See less" for each t
   // Nothing else in the pop-up is taken for a topic or for the choice: not the "See less" tab of the
   // list, not the summary's row "See less · … and others" or "Review topic choices" (they lead to the
   // topics that are done already: a live run of 1.7.0 went in there and opened 384 of them), not a
-  // "See less" of the special topics, and not a row that lies covered under the list.
-  assert.deepEqual(events.filter((e) => e.type === 'decoy'), []);
+  // switch or "See less" of the special topics, and not a row that lies covered under the list.
+  assert.deepEqual(events.filter((e) => e.type === 'decoy' || e.type === 'specialset'), []);
   assert.deepEqual(events.filter((e) => e.type === 'topicopened').map((e) => e.name).sort(), TOPICS, 'each topic is opened once');
   assert.equal(events.filter((e) => e.type === 'manage').length, 1, '"View and manage topics" is opened once');
   assert.equal(events.filter((e) => e.type === 'special').length, 1);
@@ -422,8 +423,7 @@ test('ad topics: the list behind "View and manage topics", "See less" for each t
   assert.match(log, /\d\d:\d\d:\d\d   \[ ?\d+\/14\] Alcohol → set to “See less”, remembered\n/);
   assert.match(log, /\[ ?\d+\/14\] Gambling → already “See less”, remembered\n/);
   assert.doesNotMatch(log, /no longer on screen/);
-  // What the page of the special topics showed is in the log: that is what handling it would be written from.
-  assert.match(log, /“Special topics” was opened to look at it; nothing in it was clicked\. 4 “See less” controls \(button pressed=false, .* The page showed: pop-up on .*Special topics‹h2›.*Alcohol and tobacco.*See less‹button›/);
+  assert.match(log, /Special topics, looked at and left as they are: 4 of 6 are not set to “See less”/);
   assert.equal((log.match(/→ set to “See less”, remembered\n/g) || []).length, 13);
 
   // The report lists the topics in a table of their own, with their own CSV.
@@ -452,8 +452,8 @@ test('ad topics: the list behind "View and manage topics", "See less" for each t
   assert.equal(r.ad_outside.status, 'already');
   assert.equal(r.ad_about_meta.status, 'already');
   assert.equal(r.topics.status, 'already');
-  assert.match(r.topics.text, /Already set: 0 topics set to “See less”, 14 skipped as remembered\. “Special topics” \(4 choices\) is not changed/);
-  assert.deepEqual(events.slice(before).filter((e) => ['ad_partners', 'ad_outside', 'ad_about_meta'].includes(e.id) || /^topic/.test(e.type) || e.type === 'decoy'), []);
+  assert.match(r.topics.text, /Already set: 0 topics set to “See less”, 14 skipped as remembered\. Special topics: 4 of 6 are not set to “See less”/);
+  assert.deepEqual(events.slice(before).filter((e) => ['ad_partners', 'ad_outside', 'ad_about_meta'].includes(e.id) || /^topic/.test(e.type) || e.type === 'decoy' || e.type === 'specialset'), []);
   assert.match((await saved(page, 'savelog')).text, /14 topics skipped: remembered from earlier runs\n/);
   await context.close();
 });
@@ -472,13 +472,66 @@ test('ad topics without "View and manage topics": the rows of the summary, whose
   const r = await report(page);
   assert.equal(r.topics.status, 'changed');
   // The summary shows three topics at a time; one that is set makes room for the next. "Special
-  // topics" is a row here: it opens a group, in which nothing is clicked.
-  assert.match(r.topics.text, /Changed: 13 topics set to “See less”, 1 could not be handledWhat the page showed/);
-  assert.deepEqual(events.filter((e) => e.type === 'decoy'), [], 'the row "See less" is not a topic');
+  // topics" is a row here too, and is not a topic: its page holds switches, and the words "See less"
+  // on it flip one. (1.7.0 clicked them on a live account.)
+  assert.match(r.topics.text, /Changed: 13 topics set to “See less”\. Special topics: 4 of 6 are not set to “See less”/);
+  assert.deepEqual(events.filter((e) => e.type === 'decoy' || e.type === 'specialset'), [], 'the rows "See less" and "Special topics" are not topics');
   assert.equal(events.filter((e) => e.type === 'topic' && e.value === 'See less').length, 13);
   const log = (await saved(page, 'savelog')).text;
-  assert.doesNotMatch(log, /no longer on screen|View and manage topics”: opened/);
-  assert.match(log, /Special topics → failed: opens a group of topics with several “See less” choices: not changed, set it by hand\n/);
+  assert.doesNotMatch(log, /no longer on screen|View and manage topics”: opened|failed/);
+  await context.close();
+});
+
+test('special ad topics: every switch is turned off, the ones that are off are left alone, and Max ticks the task', async () => {
+  const context = await browser.newContext();
+  const events = await mockFacebook(context, { inject: true });
+  await fakeUserscriptApi(context);
+  const page = await context.newPage();
+  const p = panel(page);
+  await page.goto('https://accountscenter.facebook.com/ads/');
+  await page.evaluate(() => window.__openMenu());
+  // Off until the Max level is chosen; it can be unticked again afterwards.
+  await p.locator('button[name="start"]').waitFor();
+  const box = p.locator('input[name="task"][value="special"]');
+  assert.equal(await box.isChecked(), false);
+  await p.locator('input[name="level"][value="max"]').check();
+  assert.equal(await box.isChecked(), true);
+  await box.uncheck();
+  assert.equal(await box.isChecked(), false);
+
+  // A dry run reads the switches and changes none.
+  await configureAndStart(page, { tasks: ['special'], dryRun: true });
+  let r = await report(page);
+  assert.equal(r.special.status, 'dry');
+  assert.match(r.special.text, /4 would be set to “See less” \(Liquor, beer & wine · Parenting · Gambling · Body Weight Control\), 2 already “See less”/);
+  assert.deepEqual(events.filter((e) => e.type === 'specialset' || e.type === 'decoy'), []);
+
+  // For real: the four that are on are turned off. The two that are off, and say "See less", are
+  // not touched: a click there would turn them back on.
+  await p.locator('button[name="menu"]').click();
+  await configureAndStart(page, { tasks: ['special'], options: { dry: false, saveLog: true } });
+  await p.locator('#step').waitFor();
+  r = await report(page);
+  assert.equal(r.special.status, 'changed');
+  assert.match(r.special.text, /Changed: 4 set to “See less” \(Liquor, beer & wine · Parenting · Gambling · Body Weight Control\), 2 already “See less”\. The choice applies to every account in this Accounts Center/);
+  assert.deepEqual(events.filter((e) => e.type === 'specialset').map((e) => `${e.name}:${e.on}`),
+    ['Liquor, beer & wine:false', 'Parenting:false', 'Gambling:false', 'Body Weight Control:false']);
+  assert.deepEqual(events.filter((e) => e.type === 'decoy' || /^topic/.test(e.type)), [], 'no topic of the list is opened by this task');
+  const log = (await saved(page, 'savelog')).text;
+  assert.match(log, /\[1\/6\] Liquor, beer & wine \(special topic\) → set to “See less”\n/);
+  assert.match(log, /\[3\/6\] Pets \(special topic\) → already “See less”\n/);
+  // They are in the report's topics table.
+  assert.equal(await p.locator('#topics tbody tr').count(), 6);
+
+  // Again: all six are off now, nothing is clicked.
+  const before = events.length;
+  await p.locator('button[name="menu"]').click();
+  await configureAndStart(page, { tasks: ['special'] });
+  await p.locator('#step').waitFor();
+  r = await report(page);
+  assert.equal(r.special.status, 'already');
+  assert.match(r.special.text, /Already set: 6 already “See less”/);
+  assert.deepEqual(events.slice(before).filter((e) => e.type === 'specialset'), []);
   await context.close();
 });
 

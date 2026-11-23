@@ -3,6 +3,22 @@
 Notable changes to this project. Versions follow [semantic versioning](https://semver.org/).
 Each release on GitHub carries the section for its version.
 
+## [1.8.0] - 2026-11-22
+
+From a live run of 1.7.2, in which the Ad topics step worked for the first time: it opened "View and manage topics", found 67 topics, set 64 to "See less" in under eight minutes and skipped 3 as remembered, with no failure. The same log showed the page of "Special topics": six switches.
+
+### Added
+
+- **Special ad topics: "See less".** A new task turns off every switch under Ad topics → Special topics (on the account of the live run: Liquor, beer & wine · Parenting · Pets · Social Issues, Elections or Politics · Gambling · Body Weight Control). A switch that is off already is left alone. Each topic gets a line in the log and a row in the report's Ad topics table, and the report names the ones that were changed. Facebook applies the choice to every account in the Accounts Center.
+  - The task is off by default. **Choosing the Max level ticks it**, like "Disconnect future off-Meta activity"; it can be unticked again before starting.
+  - A dry run reads the switches and says which would be turned off.
+
+### Changed
+
+- **Ad topics no longer opens "Special topics" as a topic.** On that page the words "See less" are part of a switch's label, and a click on them flips the switch, whichever way it is. 1.7.0 clicked them on a live account and may have turned one special topic back on; the new task turns them all off. When the new task is not part of a run, the Ad topics step looks at the special topics and the report says how many are not set to "See less".
+- **A topic's page that brings more than one "See less" is left alone**, and reported.
+- **Ad topics is no longer marked experimental.** It stays off by default: it opens one page per topic.
+
 ## [1.7.2] - 2026-11-22
 
 From a live run of 1.7.1. The advertiser steps and the settings went through as before (3 of 229 list-based advertisers were new and were switched off, 5 of 200 advertisers seen were new and were hidden, the rest skipped as remembered). The Ad topics step did nothing, and its log showed the pop-up as it is.
@@ -178,6 +194,7 @@ Development versions, not published.
 - **1.1.0** - Remembered advertisers, log saving, progress bars with time left, advertiser details as CSV.
 - **1.0.0** - First version: the menu, the advertiser and ad-data tasks, the three privacy levels, dry run and the report.
 
+[1.8.0]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.8.0
 [1.7.2]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.7.2
 [1.7.1]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.7.1
 [1.7.0]: https://github.com/privaterra/fb-ad-disable/releases/tag/v1.7.0

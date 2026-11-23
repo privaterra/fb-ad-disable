@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FB Ad Disable & Privacy Hardener
 // @namespace    https://github.com/privaterra/fb-ad-disable
-// @version      1.7.2
+// @version      1.8.0
 // @description  Opt out of advertiser lists, restrict ad data use and tighten Facebook privacy settings from one menu.
 // @license      MIT
 // @homepageURL  https://github.com/privaterra/fb-ad-disable
@@ -32,7 +32,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.7.2';
+  const VERSION = '1.8.0';
   const TAG = '[fb-ad-disable]';
   const KEY = 'fbAdDisableState';
   const MEMORY_KEY = 'fbAdDisableAdvertisers';
@@ -94,8 +94,10 @@
       hint: 'Disconnects the activity other companies and websites have already sent to Meta about you.' },
     { id: 'offfuture', on: false, label: 'Disconnect future off-Meta activity',
       hint: 'Stops new off-Meta activity being linked to your account. Side effect: “Log in with Facebook” on other sites stops working.' },
-    { id: 'topics', on: false, heavy: true, label: 'Ad topics: “See less” (experimental)',
+    { id: 'topics', on: false, heavy: true, label: 'Ad topics: “See less”',
       hint: 'Walks the ad topics list and picks “See less” for each one.' },
+    { id: 'special', on: false, label: 'Special ad topics: “See less”',
+      hint: 'Turns off every switch under Ad topics → Special topics (alcohol, parenting, pets, social issues and politics, gambling, body weight control), so you see fewer ads about them. Applies to every account in your Accounts Center. Choosing the Max level ticks this.' },
     { id: 'ai', on: true, label: 'Turn off AI features',
       hint: 'Switches off the AI settings Facebook offers on the web (comment summaries and any AI switch found in settings) and lists the ones you have to change by hand. Meta AI itself cannot be removed.' },
   ];
@@ -106,7 +108,7 @@
     { id: 'moderate', label: 'Moderate',
       hint: 'Friends only: future and past posts, friends list, email/phone lookup, tagging. No search-engine link. Tag review on. Past posts cannot be bulk-undone.' },
     { id: 'max', label: 'Max',
-      hint: 'Most restrictive: everything in Moderate, with “Only me” wherever Facebook offers it and sharing of your posts to other people’s stories off.' },
+      hint: 'Most restrictive: everything in Moderate, with “Only me” wherever Facebook offers it and sharing of your posts to other people’s stories off. Also ticks “Disconnect future off-Meta activity” and “Special ad topics” above.' },
   ];
 
   const SETTINGS = WWW + '/settings/?tab=';
@@ -1905,13 +1907,105 @@
     });
   }
 
-  // "See less" for every ad topic Facebook lists. Works like the advertiser steps: a count and a
-  // bar, one line and one table row per topic, and topics that are done are remembered.
-  async function runTopics() {
+  // The Ad topics pop-up, opened from the "Customize ads" tab. Null when its section is not there.
+  async function openAdTopics() {
     const tab = findText(['customize ads', 'customise ads'])[0];
     if (tab) { click(tab); await settle(); }
     const find = () => findText(['ad topics'])[0] || findText(['ad topics'], { mode: 'includes' })[0];
     const label = await waitFor(find, 10000).catch(() => null);
+    if (!label) return null;
+    const all = rowButton(label, [...t('seeAll'), 'view and manage topics', 'see all topics']); // "See all" next to it
+    await openRow(all || label);
+    return label;
+  }
+  // A button of the pop-up by its words, and whether a person could click it now (scrolled into
+  // view when it is not): a covered page of the pop-up stays in the document with its buttons.
+  const BTN = '[role="button"],button,a,[role="link"]';
+  const layerButton = (words) => searchText(topLayer() || document.body, words, 'exact').map((el) => el.closest(BTN)).filter(Boolean)[0] || null;
+  const inView = async (el) => {
+    if (el && !shown(el)) { try { el.scrollIntoView({ block: 'center' }); } catch (e) { /* ignore */ } await sleep(300); }
+    return !!el && shown(el);
+  };
+
+  // "Special topics", a row of the Ad topics pop-up, opens a page with one switch per topic (seen in
+  // the log of a live run of 1.7.2): on is the normal state, off is "See less", and the row then
+  // says so. The words "See less" there sit in the switch's label: a click on them flips the
+  // switch, whichever way it is. Only the switches are read and clicked.
+  const SPECIAL = ['special topics'];
+  const specialSwitches = () => {
+    const layer = topLayer();
+    if (!layer) return [];
+    const areas = new Map();
+    return switchesIn(layer).map((sw) => {
+      const row = sw.closest('label') || sw;
+      const name = clip((row === sw ? switchLabel(sw) : firstText(row)).replace(/\s*see (less|fewer)\s*$/i, ''), 80);
+      return { sw, row, name };
+    }).filter((x) => x.name && (shown(x.row) || scrolledOut(x.row, areas)));
+  };
+  // From the first page of the pop-up, or from a page opened from it: "Back" until the row is there.
+  async function openSpecial() {
+    await waitFor(() => layerButton(SPECIAL), 6000).catch(() => null);
+    for (let i = 0; i < 3 && !(await inView(layerButton(SPECIAL))); i++) {
+      const back = findLabel(t('back'), topLayer() || document.body).filter(shown).pop();
+      if (!back) break;
+      click(back);
+      await settle();
+    }
+    const row = layerButton(SPECIAL);
+    if (!(await inView(row))) return false;
+    click(row);
+    await settle();
+    const there = () => !!topLayer() && [...topLayer().querySelectorAll('h1,h2,[role="heading"]')].some((el) => SPECIAL.includes(norm(el.textContent)) && shown(el)) &&
+      specialSwitches().length > 0;
+    return !!(await waitFor(there, 6000).catch(() => false));
+  }
+
+  // Every special topic set to "See less": its switch turned off.
+  async function runSpecial() {
+    if (!(await openAdTopics())) throw new RowMissing('could not find the “Ad topics” section');
+    if (!(await openSpecial())) throw new RowMissing('could not find “Special topics” in the Ad topics pop-up');
+    const names = [...new Set(specialSwitches().map((x) => x.name))];
+    const out = { changed: [], same: [], dry: [], unsure: [] };
+    let n = 0;
+    for (const name of names) {
+      check();
+      const find = () => specialSwitches().find((x) => x.name === name);
+      const it = find();
+      if (!it) continue;
+      let result, action = 'none';
+      if (!switchOn(it.sw)) {
+        out.same.push(name);
+        result = 'already “See less”';
+      } else {
+        try {
+          const layer = topLayer();
+          act(it.sw, `turn off “${name}”`);
+          await settle();
+          if (topLayer() !== layer) await confirmIf(); // a question in a pop-up of its own
+          action = 'switched off';
+          const off = await waitFor(() => { const now = find(); return !!now && !switchOn(now.sw); }, 4000).catch(() => false);
+          if (off) { out.changed.push(name); result = 'set to “See less”'; } else { out.unsure.push(name); result = 'switched off, but shown as on afterwards'; }
+        } catch (e) {
+          if (!(e instanceof DryRun)) throw e;
+          out.dry.push(name);
+          result = 'would be set to “See less” (dry run)';
+        }
+      }
+      log(advLine(record({ task: 'topic', name: `${name} (special topic)`, result, action }, null, false), ++n, names.length));
+    }
+    if (!n) throw new Error('“Special topics” opened, but no switches were found in it');
+    const list = (a) => `${a.length} ${a === out.dry ? 'would be set to “See less”' : a === out.changed ? 'set to “See less”' : 'switched off but shown as on afterwards'} (${a.join(' · ')})`;
+    const detail = [out.dry, out.changed, out.unsure].filter((a) => a.length).map(list)
+      .concat(out.same.length ? [`${out.same.length} already “See less”`] : []).join(', ') +
+      (out.unsure.length ? ': check those by hand' : '') + '. The choice applies to every account in this Accounts Center';
+    const status = out.dry.length ? 'dry' : out.changed.length ? 'changed' : out.unsure.length ? 'manual' : 'already';
+    return { status, detail, seen: out.unsure.length ? snapshot(new Map()) : undefined };
+  }
+
+  // "See less" for every ad topic Facebook lists. Works like the advertiser steps: a count and a
+  // bar, one line and one table row per topic, and topics that are done are remembered.
+  async function runTopics() {
+    const label = await openAdTopics();
     const same = (c) => (c.same ? `, ${c.same} already “See less”` : '') + (c.known ? `, ${c.known} skipped as remembered` : '');
     const words = {
       dry: (c) => `${c.dry} topics would be set to “See less”${same(c)}`,
@@ -1930,25 +2024,17 @@
           `so the rest of the list was not reached. Run this task again${state.opts.remember ? '; the topics done are remembered' : ''}`,
       };
     }
-    const all = rowButton(label, [...t('seeAll'), 'view and manage topics', 'see all topics']); // "See all" next to it
-    await openRow(all || label);
 
     // The pop-up opens on a summary (seen in a live run of 1.7.1): three topics, "Special topics",
     // and the topics already chosen. The topics themselves are behind "View and manage topics".
-    const BTN = '[role="button"],button,a,[role="link"]';
-    const button = (words) => searchText(topLayer() || document.body, words, 'exact').map((el) => el.closest(BTN)).filter(Boolean)[0] || null;
-    const inView = async (el) => {
-      if (el && !shown(el)) { try { el.scrollIntoView({ block: 'center' }); } catch (e) { /* ignore */ } await sleep(300); }
-      return !!el && shown(el);
-    };
     const VIEW = ['view and manage topics', 'view all topics', 'see all topics'];
     // Only a button a person could click now: the summary stays in the document under the list.
     const enter = async (wait) => {
-      const btn = await waitFor(() => button(VIEW), wait).catch(() => null);
+      const btn = await waitFor(() => layerButton(VIEW), wait).catch(() => null);
       if (!(await inView(btn))) return false;
       click(btn);
       await settle();
-      await waitFor(() => { const b = button(VIEW); return !b || !shown(b); }, 8000).catch(() => null);
+      await waitFor(() => { const b = layerButton(VIEW); return !b || !shown(b); }, 8000).catch(() => null);
       return true;
     };
     const summary = await enter(4000);
@@ -1968,16 +2054,16 @@
     };
     let last = Date.now();
     const res = await drillList('topicsDone', async ({ opt, others }) => {
-      // A row such as "Special topics" opens a page of several topics, each with a "See less" of its
-      // own. Which of them is set, and what a click does there, is not known: nothing is clicked.
-      if (others >= 2) throw new Error('opens a group of topics with several “See less” choices: not changed, set it by hand');
+      // A topic's page has one "See less". A page that brings several is something else, and what a
+      // click does there is not known: nothing is clicked.
+      if (others >= 1) throw new Error('opens a page with several “See less” choices: not changed, set it by hand');
       // The option that came up, or the one the page drew in its place.
       const r = await pick(() => (opt.isConnected && visible(opt) ? opt : options()[0] || null));
       if (r.status !== 'changed') return { status: 'already' };
       if (r.off) throw new Error('“See less” was clicked, but the page still showed it as not selected');
       return { status: 'changed' };
     }, {
-      ignore: [...t('seeLess'), 'no preference', 'learn more'],
+      ignore: [...t('seeLess'), 'no preference', 'learn more', ...SPECIAL], // "Special topics" is a page of switches, not a topic
       reopen: summary ? () => enter(1500) : null,
       probe: () => new Set(options()),
       ready: (was, name, { inEntry }) => {
@@ -2011,44 +2097,23 @@
     });
     const known = (state.topicsDoneCount || {}).known || 0;
     if (known) log(`  ${known} topics skipped: remembered from earlier runs`);
-    if (summary) res.detail += await special();
-    return res;
-
-    // "Special topics", on the summary, opens a page of several topics with a control each. What a
-    // click does there is not known yet (1.7.0 clicked one and could not read the result), so the
-    // page is only looked at: what it shows goes in the log, and the report says it was left alone.
-    async function special() {
-      const WORDS = ['special topics'];
+    // The special topics are another task's. When it is not part of this run, they are looked at
+    // and the report says how they stand; nothing there is clicked.
+    if (!state.opts.tasks.includes('special')) {
       try {
-        for (let i = 0; i < 3 && !(await inView(button(WORDS))); i++) { // back to the summary
-          const back = findLabel(t('back'), topLayer() || document.body).filter(shown).pop();
-          if (!back) break;
-          click(back);
-          await settle();
+        if (await openSpecial()) {
+          const all = specialSwitches();
+          const still = all.filter((x) => switchOn(x.sw)).map((x) => x.name);
+          const note = still.length ? `${still.length} of ${all.length} are not set to “See less” (${still.join(' · ')}); the task “Special ad topics” sets them`
+            : `all ${all.length} are set to “See less”`;
+          log(`  Special topics, looked at and left as they are: ${note}`);
+          res.detail += `. Special topics: ${note}`;
         }
-        const row = button(WORDS);
-        if (!(await inView(row))) return '';
-        const was = new Set(options());
-        click(row);
-        await settle();
-        const came = await waitFor(() => { const now = options().filter((o) => !was.has(o)); return now.length ? now : null; }, 5000).catch(() => []);
-        if (!came.length) { log('  “Special topics” was clicked to look at it: nothing new was shown'); return ''; }
-        const controls = came.slice(0, 8).map((o) => {
-          const b = o.closest(BTN + ',[role="radio"],[role="checkbox"],[role="switch"]') || o;
-          const attrs = ['aria-pressed', 'aria-checked', 'aria-selected', 'aria-disabled'].filter((a) => b.hasAttribute(a))
-            .map((a) => `${a.slice(5)}=${b.getAttribute(a)}`).join(' ');
-          return `${b.getAttribute('role') || b.tagName.toLowerCase()}${attrs ? ' ' + attrs : ''}`;
-        });
-        log(`  “Special topics” was opened to look at it; nothing in it was clicked. ${came.length} “See less” controls (${controls.join(', ')}). ` +
-          `The page showed: ${snapshot(new Map())}`);
-        const back = findLabel(t('back'), topLayer() || document.body).filter(shown).pop();
-        if (back) { click(back); await settle(); }
-        return `. “Special topics” (${came.length} choices) is not changed by this script: set it by hand`;
       } catch (e) {
         if (e instanceof Abort) throw e;
-        return '';
       }
     }
+    return res;
   }
 
   // Finds a row, walking down the Accounts Center menus to it when it is not on screen yet.
@@ -2232,6 +2297,8 @@
     if (on('adsettings')) for (const s of AD_SETTINGS) units.push(setting(s, s.all));
     if (on('topics')) units.push({ id: 'topics', advertisers: true, noun: 'topics', title: 'Ad topics: See less', url: ADS,
       manual: 'On the “Customize ads” tab, click “See all” next to “Ad topics”, then “View and manage topics”, and choose “See less” for each topic.', run: runTopics });
+    if (on('special')) units.push({ id: 'special', title: 'Special ad topics: See less', url: ADS,
+      manual: 'On the “Customize ads” tab, click “See all” next to “Ad topics”, then “Special topics”, and turn every switch off.', run: runSpecial });
     const gone = 'Facebook does not offer this on your account. Meta is replacing it with “Activity from other businesses”, which the ad data task sets';
     const offPath = 'Accounts Center → Your information and permissions → Your activity off Meta technologies (or “Activity from other businesses”)';
     if (on('offclear')) units.push({ id: 'offclear', title: 'Clear off-Meta activity history', optional: true, gone, ...where('offclear', offMeta),
@@ -2246,7 +2313,7 @@
     }
     if (o.level !== 'default') for (const s of PRIVACY) if (s[o.level] !== undefined) units.push(setting(s, s[o.level]));
     // The menu section a step belongs to, for the "last run" notes.
-    const own = ['lists', 'seen', 'topics', 'offclear', 'offfuture'];
+    const own = ['lists', 'seen', 'topics', 'special', 'offclear', 'offfuture'];
     for (const u of units) u.task = own.includes(u.id) ? u.id : u.id.startsWith('ai_') ? 'ai' : u.id.startsWith('ad_') ? 'adsettings' : 'privacy';
     return units;
   }
@@ -2761,7 +2828,7 @@
       const level = saved ? saved.level : 'default';
       const levelBoxes = LEVELS.map((lv) => h('label', { class: 'opt' },
         h('input', { type: 'radio', name: 'level', value: lv.id, checked: lv.id === level,
-          onchange: () => { if (lv.id === 'max') body.querySelector('input[value="offfuture"]').checked = true; } }),
+          onchange: () => { if (lv.id === 'max') for (const id of ['offfuture', 'special']) body.querySelector(`input[value="${id}"]`).checked = true; } }),
         h('span', null, lv.label), h('em', null, lv.hint)));
       const speed = h('select', { name: 'speed' },
         [['600', 'Fast'], ['1500', 'Normal'], ['3000', 'Slow']].map(([v, name]) =>
